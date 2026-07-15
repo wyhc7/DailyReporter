@@ -1,0 +1,56 @@
+name: Daily TG Push
+
+on:
+  schedule:
+    # UTC 时间 22:00 = 北京时间次日 06:00（早上推送）
+    - cron: "0 22 * * *"
+  # 支持手动触发
+  workflow_dispatch:
+    inputs:
+      city:
+        description: "城市名（中文）"
+        required: false
+        default: "常德"
+      city_en:
+        description: "城市英文名"
+        required: false
+        default: "Changde"
+      lat:
+        description: "纬度"
+        required: false
+        default: "29.0317"
+      lon:
+        description: "经度"
+        required: false
+        default: "111.6985"
+      tz:
+        description: "时区"
+        required: false
+        default: "Asia/Shanghai"
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run daily push
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          DAILY_CITY: ${{ github.event.inputs.city || '常德' }}
+          DAILY_CITY_EN: ${{ github.event.inputs.city_en || 'Changde' }}
+          DAILY_LAT: ${{ github.event.inputs.lat || '29.0317' }}
+          DAILY_LON: ${{ github.event.inputs.lon || '111.6985' }}
+          DAILY_TZ: ${{ github.event.inputs.tz || 'Asia/Shanghai' }}
+        run: python daily_push.py
