@@ -3,6 +3,7 @@
 每日信息推送脚本（增强版）
 自动获取日期、农历、节日、天气和一言，发送到Telegram
 支持农历日期、多天气API、配置文件管理
+使用更稳定的lunar-python库替代已废弃的lunardate
 """
 
 import os
@@ -13,15 +14,26 @@ import argparse
 from datetime import datetime, date
 from typing import Dict, Optional, Tuple, List
 import logging
+
+# 尝试导入现代农历日期库
 try:
-    from lunardate import LunarDate
+    from lunar_python import Lunar, Solar
     LUNAR_AVAILABLE = True
+    logger_import = "已加载lunar-python库"
 except ImportError:
-    LUNAR_AVAILABLE = False
+    try:
+        # 回退到传统库（可能会失败）
+        from lunardate import LunarDate
+        LUNAR_AVAILABLE = True
+        logger_import = "已加载lunardate库（旧版）"
+    except ImportError:
+        LUNAR_AVAILABLE = False
+        logger_import = "未找到农历日期库"
 
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+logger.info(logger_import)
 
 class DailyReport:
     def __init__(self, config_file: str = None):
@@ -106,10 +118,12 @@ class DailyReport:
     def get_lunar_info(self, date_obj: date) -> str:
         """获取农历信息"""
         if not LUNAR_AVAILABLE:
-            return "农历日期（需安装lunardate库）"
+            return "农历日期（需安装lunar-python库）"
         
         try:
-            lunar = LunarDate.fromSolarDate(date_obj.year, date_obj.month, date_obj.day)
+            # 使用lunar-python库
+            solar = Solar.fromYmd(date_obj.year, date_obj.month, date_obj.day)
+            lunar = solar.getLunar()
             
             # 农历月份名称
             month_names = ['', '正月', '二月', '三月', '四月', '五月', '六月',
@@ -117,13 +131,30 @@ class DailyReport:
             
             # 农历日期名称
             day_names = ['', '初一', '初二', '初三', '初四', '初五', '初六', '初七', '初八', '初九', '初十',
-                        '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', '二十',
+                        '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', 'twenty',
                         '廿一', '廿二', '廿三', '廿四', '廿五', '廿六', '廿七', '廿八', '廿九', '三十']
             
-            lunar_month_name = month_names[lunar.month] if lunar.month < len(month_names) else f"{lunar.month}月"
-            lunar_day_name = day_names[lunar.day] if lunar.day < len(day_names) else str(lunar.day)
+            # 获取农历月份和日期
+            lunar_month = lunar.getMonth()
+            lunar_day = lunar.getDay()
             
-            return f"农历{lunar_month_name}{lunar_day_name}（{lunar.year}年）"
+            # 月份名称
+            lunar_month_name = month_names[lunar_month] if lunar_month < len(month_names) else f"{lunar_month}月"
+            
+            # 日期名称
+            if lunar_day < len(day_names):
+                lunar_day_name = day_names[lunar_day]
+            elif lunar_day == 30:
+                lunar_day_name = '三十'
+            elif lunar_day == 20:
+                lunar_day_name = '二十'
+            else:
+                lunar_day_name = str(lunar_day)
+            
+            # 农历年份
+            lunar_year = lunar.getYearInGanZhi()
+            
+            return f"农历{lunar_month_name}{lunar_day_name}（{lunar_year}）"
             
         except Exception as e:
             logger.error(f"获取农历日期失败: {e}")
@@ -151,11 +182,16 @@ class DailyReport:
         if month_day in solar_holidays:
             holidays.append(solar_holidays[month_day])
         
-        # 农历节日判断
+        # 农历节日判断（如果库可用）
         if LUNAR_AVAILABLE:
             try:
-                lunar = LunarDate.fromSolarDate(date_obj.year, date_obj.month, date_obj.day)
-                lunar_month_day = f"{lunar.month:02d}{lunar.day:02d}"
+                solar = Solar.fromYmd(date_obj.year, date_obj.month, date_obj.day)
+                lunar = solar.getLunar()
+                
+                # 获取农历月份和日期
+                lunar_month = lunar.getMonth()
+                lunar_day = lunar.getDay()
+                lunar_month_day = f"{lunar_month:02d}{lunar_day:02d}"
                 
                 lunar_holidays = {
                     '0101': '春节',
@@ -170,7 +206,8 @@ class DailyReport:
                 
                 if lunar_month_day in lunar_holidays:
                     holidays.append(lunar_holidays[lunar_month_day])
-            except:
+            except Exception as e:
+                logger.debug(f"获取农历节日失败: {e}")
                 pass
         
         if holidays:
@@ -213,40 +250,40 @@ class DailyReport:
                 'lang': 'zh'
             }
             
-            response = requests.get(base_url, params=params, timeout=10)
+            response = requests.get(base_url, params=params, timeout=15)
             response.raise_for_status()
             data = response.json()
             
-            if data['code'] != '200':
+            if data.get('code') != '200':
                 return {'description': '获取失败', 'city': self.city}
             
             # 获取3天预报（用于日出日落）
             daily_url = "https://devapi.qweather.com/v7/weather/3d"
-            daily_response = requests.get(daily_url, params=params, timeout=10)
+            daily_response = requests.get(daily_url, params=params, timeout=15)
             daily_data = daily_response.json()
             
             # 获取生活指数
             indices_url = "https://devapi.qweather.com/v7/indices/1d"
             indices_params = params.copy()
             indices_params.update({'type': '1,3,9'})  # 舒适度、穿衣、紫外线
-            indices_response = requests.get(indices_url, params=indices_params, timeout=10)
+            indices_response = requests.get(indices_url, params=indices_params, timeout=15)
             indices_data = indices_response.json()
             
-            now = data['now']
-            today_forecast = daily_data['daily'][0] if daily_data['code'] == '200' else {}
+            now = data.get('now', {})
+            today_forecast = daily_data.get('daily', [{}])[0] if daily_data.get('code') == '200' else {}
             
             weather = {
                 'city': self.city,
-                'description': now['text'],
-                'temp': now['temp'],
-                'feels_like': now['feelsLike'],
+                'description': now.get('text', '未知'),
+                'temp': now.get('temp', 'N/A'),
+                'feels_like': now.get('feelsLike', 'N/A'),
                 'temp_min': today_forecast.get('tempMin', 'N/A'),
                 'temp_max': today_forecast.get('tempMax', 'N/A'),
-                'humidity': now['humidity'],
-                'pressure': now['pressure'],
-                'wind_speed': now['windSpeed'],
-                'wind_scale': now['windScale'],
-                'wind_dir': now['windDir'],
+                'humidity': now.get('humidity', 'N/A'),
+                'pressure': now.get('pressure', 'N/A'),
+                'wind_speed': now.get('windSpeed', 'N/A'),
+                'wind_scale': now.get('windScale', 'N/A'),
+                'wind_dir': now.get('windDir', 'N/A'),
                 'vis': now.get('vis', 'N/A'),
                 'cloud': now.get('cloud', 'N/A'),
                 'sunrise': today_forecast.get('sunrise', 'N/A'),
@@ -257,10 +294,10 @@ class DailyReport:
             }
             
             # 添加生活指数
-            if indices_data['code'] == '200':
+            if indices_data.get('code') == '200':
                 indices = {}
-                for item in indices_data['daily']:
-                    indices[item['type']] = item
+                for item in indices_data.get('daily', []):
+                    indices[item.get('type')] = item
                 weather['indices'] = indices
             
             return weather
@@ -280,22 +317,22 @@ class DailyReport:
                 'lang': 'zh_cn'
             }
             
-            response = requests.get(base_url, params=params, timeout=10)
+            response = requests.get(base_url, params=params, timeout=15)
             response.raise_for_status()
             data = response.json()
             
             weather = {
                 'city': self.city,
-                'description': data['weather'][0]['description'],
-                'temp': data['main']['temp'],
-                'temp_min': data['main']['temp_min'],
-                'temp_max': data['main']['temp_max'],
-                'humidity': data['main']['humidity'],
-                'pressure': data['main']['pressure'],
-                'wind_speed': data['wind']['speed'],
+                'description': data.get('weather', [{}])[0].get('description', '未知'),
+                'temp': data.get('main', {}).get('temp', 'N/A'),
+                'temp_min': data.get('main', {}).get('temp_min', 'N/A'),
+                'temp_max': data.get('main', {}).get('temp_max', 'N/A'),
+                'humidity': data.get('main', {}).get('humidity', 'N/A'),
+                'pressure': data.get('main', {}).get('pressure', 'N/A'),
+                'wind_speed': data.get('wind', {}).get('speed', 'N/A'),
                 'wind_dir': data.get('wind', {}).get('deg', 'N/A'),
-                'sunrise': datetime.fromtimestamp(data['sys']['sunrise']).strftime('%H:%M'),
-                'sunset': datetime.fromtimestamp(data['sys']['sunset']).strftime('%H:%M'),
+                'sunrise': datetime.fromtimestamp(data.get('sys', {}).get('sunrise', 0)).strftime('%H:%M') if data.get('sys', {}).get('sunrise') else 'N/A',
+                'sunset': datetime.fromtimestamp(data.get('sys', {}).get('sunset', 0)).strftime('%H:%M') if data.get('sys', {}).get('sunset') else 'N/A',
                 'clouds': data.get('clouds', {}).get('all', 0),
                 'visibility': data.get('visibility', 0),
                 'source': 'OpenWeatherMap'
@@ -316,13 +353,13 @@ class DailyReport:
                 'token': self.get_config('AQICN_API_KEY')
             }
             
-            response = requests.get(url, params=params, timeout=10)
+            response = requests.get(url, params=params, timeout=15)
             response.raise_for_status()
             data = response.json()
             
-            if data['status'] == 'ok':
-                aqi_data = data['data']
-                aqi = aqi_data['aqi']
+            if data.get('status') == 'ok':
+                aqi_data = data.get('data', {})
+                aqi = aqi_data.get('aqi', 0)
                 iaqi = aqi_data.get('iaqi', {})
                 
                 # AQI等级描述
@@ -344,7 +381,7 @@ class DailyReport:
                 return {
                     'value': aqi,
                     'level': level_desc,
-                    'desc': aqi_data.get('attributions', [{}])[0].get('name', ''),
+                    'desc': '',
                     'pm25': iaqi.get('pm25', {}).get('v', 'N/A'),
                     'pm10': iaqi.get('pm10', {}).get('v', 'N/A'),
                     'o3': iaqi.get('o3', {}).get('v', 'N/A'),
@@ -362,10 +399,10 @@ class DailyReport:
     def get_hitokoto(self) -> str:
         """获取一言"""
         try:
-            response = requests.get('https://v1.hitokoto.cn/', timeout=5)
+            response = requests.get('https://v1.hitokoto.cn/', timeout=10)
             response.raise_for_status()
             data = response.json()
-            return f"{data['hitokoto']} —— {data['from']}"
+            return f"{data.get('hitokoto', '')} —— {data.get('from', '')}"
         except:
             fallback_quotes = [
                 "岁月不居，时节如流。",
@@ -397,7 +434,7 @@ class DailyReport:
         message += f"\n🌤️ *天气信息*（{weather['city']}）\n"
         message += f"  天气：{weather['description']}\n"
         
-        if weather['source'] == '和风天气':
+        if weather['source'] == '和风天气' and weather.get('feels_like') != 'N/A':
             message += f"  温度：{weather['temp']}°C（体感 {weather['feels_like']}°C）\n"
         else:
             message += f"  温度：{weather['temp']}°C\n"
@@ -412,14 +449,20 @@ class DailyReport:
         else:
             message += "m/s\n"
         
-        message += f"  云量：{weather.get('clouds', weather.get('cloud', 'N/A'))}%\n"
-        message += f"  能见度：{weather.get('vis', weather.get('visibility', 'N/A'))}米\n"
+        # 云量显示
+        clouds = weather.get('clouds', weather.get('cloud', 'N/A'))
+        message += f"  云量：{clouds}%\n"
+        
+        # 能见度显示
+        visibility = weather.get('vis', weather.get('visibility', 'N/A'))
+        message += f"  能见度：{visibility}米\n"
+        
         message += f"  日出/日落：{weather['sunrise']} / {weather['sunset']}\n"
         
         # 空气质量
         if 'aqi' in weather and isinstance(weather['aqi'], dict):
             aqi = weather['aqi']
-            if aqi.get('value') != 'N/A':
+            if aqi.get('value') != 'N/A' and aqi.get('value') != 0:
                 message += f"  🌫️ 空气质量：{aqi['value']} ({aqi['level']})\n"
                 if aqi.get('pm25') != 'N/A':
                     message += f"    PM2.5：{aqi['pm25']} μg/m³\n"
@@ -432,11 +475,11 @@ class DailyReport:
             message += f"\n📊 *生活指数*\n"
             for idx_type, idx_data in indices.items():
                 if idx_type == '1':  # 舒适度
-                    message += f"  舒适度：{idx_data['category']} - {idx_data['text']}\n"
+                    message += f"  舒适度：{idx_data.get('category', 'N/A')} - {idx_data.get('text', '')}\n"
                 elif idx_type == '3':  # 穿衣
-                    message += f"  穿衣指数：{idx_data['category']} - {idx_data['text']}\n"
+                    message += f"  穿衣指数：{idx_data.get('category', 'N/A')} - {idx_data.get('text', '')}\n"
                 elif idx_type == '9':  # 紫外线
-                    message += f"  紫外线：{idx_data['category']} - {idx_data['text']}\n"
+                    message += f"  紫外线：{idx_data.get('category', 'N/A')} - {idx_data.get('text', '')}\n"
         
         message += f"\n💭 *今日一言*\n"
         message += f"  {hitokoto}\n"
@@ -458,7 +501,7 @@ class DailyReport:
         }
         
         try:
-            response = requests.post(url, data=payload, timeout=10)
+            response = requests.post(url, data=payload, timeout=15)
             response.raise_for_status()
             result = response.json()
             
@@ -479,7 +522,7 @@ class DailyReport:
         
         # 生成消息
         message = self.generate_message()
-        logger.debug(f"生成的消息:\n{message}")
+        logger.info(f"生成的消息长度: {len(message)}字符")
         
         # 发送到Telegram
         success = self.send_to_telegram(message)
@@ -514,6 +557,7 @@ def main():
         print("测试模式 - 生成的消息:")
         print(message)
         print("\n消息长度:", len(message))
+        print("\n农历库状态:", "可用" if LUNAR_AVAILABLE else "不可用")
         return 0
     
     # 正常执行
