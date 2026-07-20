@@ -341,11 +341,11 @@ def get_hitokoto():
 # ── 6. 多通道推送 ─────────────────────────────────
 
 def send_telegram(text: str):
-    """Telegram 推送（MarkdownV2）"""
+    """Telegram 推送（纯文本模式）"""
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "MarkdownV2", "disable_web_page_preview": True}
+    payload = {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "HTML", "disable_web_page_preview": True}
     req = request.Request(url, data=parse.urlencode(payload).encode(),
                           headers={"Content-Type": "application/x-www-form-urlencoded"})
     with request.urlopen(req, timeout=15) as resp:
@@ -607,66 +607,80 @@ def main():
     holiday, lunar_str = get_calendar_info()
     hitokoto = get_hitokoto()
 
-    # ── 消息拼装 ──
+    # ── 消息拼装（纯文本排版） ──
     L = []
 
     # 头栏
-    L.append(f"📆  *{esc(DATE_STR)}*  ·  *{esc(WEEKDAY)}*")
+    header = f"📆 {DATE_STR}  {WEEKDAY}"
     if lunar_str:
-        L.append(f"📜  {esc(lunar_str)}")
+        header += f"   📜 农历：{lunar_str}"
     if holiday:
-        L.append(f"🎉  *{esc(holiday)}*")
+        header += f"   🎉 {holiday}"
+    L.append(header)
+    L.append("━" * 24)
     L.append("")
-
-    L.append(f"📍  *{esc(city_name)}*")
+    L.append(f"📍 城市：{city_name}")
     L.append("")
 
     # ── 天气 ──
-    wx_emoji = {
+    wx_emoji_day = {
         "晴":"☀️","少云":"🌤","晴间多云":"🌤","多云":"⛅","阴":"☁️",
         "霾":"🌫","扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫",
         "雨":"🌧","小雨":"🌦","中雨":"🌧","大雨":"🌧","暴雨":"🌧",
         "雷阵雨":"⛈","雪":"❄️","小雪":"🌨","中雪":"❄️","大雪":"❄️",
         "暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
     }
-    d_e = wx_emoji.get(w['textDay'], "🌡")
-    n_e = wx_emoji.get(w['textNight'], "🌡")
+    wx_emoji_night = {
+        "晴":"🌙","少云":"🌤","晴间多云":"🌤","多云":"☁️","阴":"☁️",
+        "霾":"🌫","扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫",
+        "雨":"🌧","小雨":"🌦","中雨":"🌧","大雨":"🌧","暴雨":"🌧",
+        "雷阵雨":"⛈","雪":"❄️","小雪":"🌨","中雪":"❄️","大雪":"❄️",
+        "暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
+    }
+    d_e = wx_emoji_day.get(w['textDay'], "🌡")
+    n_e = wx_emoji_night.get(w['textNight'], "🌙")
 
-    L.append(f"{d_e}  *白天*  {esc(w['textDay'])}")
-    L.append(f"{n_e}  *夜间*  {esc(w['textNight'])}")
-    L.append(f"🌡  *{esc(w['tempMin'])} ～ {esc(w['tempMax'])} °C*")
-    L.append(f"💧  {esc(w['humidity'])}%")
-    L.append(f"☔  {esc(w['precip'])} mm")
-    L.append(f"🍃  {esc(w['windDirDay'])}  {esc(w['windScaleDay'])}")
-    L.append(f"🌅  {esc(w['sunrise'])}")
-    L.append(f"🌇  {esc(w['sunset'])}")
+    L.append(f"{d_e} 白天：{w['textDay']}   {n_e} 夜间：{w['textNight']}")
+    L.append(f"🌡 温  度：{w['tempMin']}°C ～ {w['tempMax']}°C")
+    L.append(f"💧 湿  度：{w['humidity']}%")
+    L.append(f"🌅 日  出：{w['sunrise']}")
+    L.append(f"🌇 日  落：{w['sunset']}")
+    L.append(f"💨 风  力：{w['windDirDay']}  {w['windScaleDay']}")
+    L.append(f"🌧 降水量：{w['precip']} mm")
     uv = w['uvIndex']
-    try: uv_num = int(uv)
-    except: uv_num = 0
+    try:
+        uv_num = int(uv)
+    except:
+        uv_num = 0
     uv_label = "弱" if uv_num<=2 else "中等" if uv_num<=5 else "强" if uv_num<=7 else "极强"
-    L.append(f"☀️  紫外线 {esc(uv)}（{uv_label}）")
-    L.append(f"🔵  气压 {esc(w['pressure'])} hPa")
-    L.append(f"👁  能见度 {esc(w['vis'])} km")
+    L.append(f"☀️ 紫外线：{uv}（{uv_label}）")
+    L.append(f"🔵 气  压：{w['pressure']} hPa")
+    L.append(f"👁 能 见度：{w['vis']} km")
     L.append("")
 
     # ── 空气 ──
     if air:
-        L.append(f"🌬️  *空气*  {esc(air['label'])}")
+        L.append("━" * 24)
+        L.append("")
+        L.append(f"🌬️ 空气质量：{air['label']}")
         primary = air['primary']
         if primary and primary not in ("NA","N/A","无","?"):
-            L.append(f"首要污染物：{esc(primary)}")
-        L.append(f"PM₂ ₅  {esc(air['pm2p5'])}")
-        L.append(f"PM₁₀  {esc(air['pm10'])}")
-        L.append(f"NO₂  {esc(air['no2'])}")
-        L.append(f"SO₂  {esc(air['so2'])}")
-        L.append(f"O₃  {esc(air['o3'])}")
-        L.append(f"CO  {esc(air['co'])}")
+            L.append(f"  首要污染物：{primary}")
+        L.append(f"  • PM₂₅ ：{air['pm2p5']}")
+        L.append(f"  • PM₁₀ ：{air['pm10']}")
+        L.append(f"  • SO₂  ：{air['so2']}")
+        L.append(f"  • NO₂  ：{air['no2']}")
+        L.append(f"  • O₃   ：{air['o3']}")
+        L.append(f"  • CO   ：{air['co']}")
         L.append("")
 
     # ── 一言 ──
-    L.append(f"📖  {esc(hitokoto)}")
+    L.append("━" * 24)
     L.append("")
-    L.append(f"_{esc('⏰ 每日自动推送 · GitHub Actions')}_")
+    L.append(f"📖 今日一言")
+    L.append(hitokoto)
+    L.append("")
+    L.append(f"_自动推送 · GitHub Actions · {DATE_STR}_")
 
     message = "\n".join(L)
     print("\n═══ 最终消息 ═══")
