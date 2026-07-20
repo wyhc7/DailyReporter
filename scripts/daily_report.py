@@ -23,21 +23,18 @@ def fetch_json(url: str, timeout: int = 12):
     req = request.Request(url, headers={
         "User-Agent":      "DailyReportBot/1.0",
         "Accept":          "application/json",
-        "Accept-Encoding": "gzip",  # 告诉服务器：gzip 我可以
+        "Accept-Encoding": "gzip",
     })
     with request.urlopen(req, timeout=timeout) as resp:
         raw = resp.read()
-        # 如果响应被 gzip 压缩，解压
         if resp.headers.get("Content-Encoding") == "gzip":
             raw = gzip.decompress(raw)
-        # 有的服务器不设 Content-Encoding 但实际发了 gzip，magic bytes: 0x1f 0x8b
         elif len(raw) >= 2 and raw[:2] == b"\x1f\x8b":
             raw = gzip.decompress(raw)
         return json.loads(raw.decode("utf-8"))
 
 
 def fetch_json_no_fail(url: str, timeout: int = 8):
-    """同上，但失败时返回 None 而不是抛异常。"""
     try:
         return fetch_json(url, timeout)
     except Exception:
@@ -46,7 +43,6 @@ def fetch_json_no_fail(url: str, timeout: int = 8):
 
 # ── 1. 城市 → 和风 Location ID ────────────────────────
 def city_lookup(city: str) -> tuple:
-    """返回 (location_id, city_name, lat, lon)"""
     url = (
         "https://geoapi.qweather.com/v2/city/lookup?"
         + parse.urlencode({"location": city, "key": QW_KEY, "number": 1})
@@ -60,7 +56,6 @@ def city_lookup(city: str) -> tuple:
 
 # ── 2. 和风 7 天预报 ──────────────────────────────────
 def get_qweather(loc_id: str):
-    """和风天气 7d 预报，返回今天的数据字典"""
     url = (
         "https://devapi.qweather.com/v7/weather/7d?"
         + parse.urlencode({"location": loc_id, "key": QW_KEY})
@@ -71,7 +66,6 @@ def get_qweather(loc_id: str):
 
     today = data["daily"][0]
 
-    # 风力等级转文字
     wind_scale_map = {
         1:"微风", 2:"轻风", 3:"微风", 4:"和风", 5:"清风",
         6:"强风", 7:"疾风", 8:"大风", 9:"烈风", 10:"狂风",
@@ -101,17 +95,17 @@ def get_qweather(loc_id: str):
     }
 
 
-# ── 3. 和风空气质量 ──────────────────────────────────
+# ── 3. 和风空气质量（实时 + 污染物详情）────────────────
 def get_qweather_air(loc_id: str):
-    """和风 5 天空气质量"""
     url = (
-        "https://devapi.qweather.com/v7/air/5d?"
+        "https://devapi.qweather.com/v7/air/now?"
         + parse.urlencode({"location": loc_id, "key": QW_KEY})
     )
     data = fetch_json_no_fail(url, timeout=10)
     if not data or data.get("code") != "200":
         return None
-    today = data["daily"][0]
+
+    today = data["now"]
 
     aqi = int(today.get("aqi", "0"))
     if aqi <= 50:
@@ -132,12 +126,12 @@ def get_qweather_air(loc_id: str):
         "level":     today.get("level",     "?"),
         "category":  today.get("category",  "?"),
         "primary":   today.get("primary",   "无"),
-        "pm2p5":     today.get("pm2p5",     "?"),
-        "pm10":      today.get("pm10",      "?"),
-        "no2":       today.get("no2",       "?"),
-        "so2":       today.get("so2",       "?"),
-        "co":        today.get("co",        "?"),
-        "o3":        today.get("o3",        "?"),
+        "pm2p5":     today.get("pm2p5",     "N/A"),
+        "pm10":      today.get("pm10",      "N/A"),
+        "no2":       today.get("no2",       "N/A"),
+        "so2":       today.get("so2",       "N/A"),
+        "co":        today.get("co",        "N/A"),
+        "o3":        today.get("o3",        "N/A"),
         "label":     f"{emoji}（AQI {aqi}·{today.get('category','')}）",
     }
 
@@ -195,7 +189,6 @@ def esc(s):
 
 # ────── 主流程 ────────────────────────────────────────
 def main():
-    # ── 启动校验 ──
     if not QW_KEY:
         raise RuntimeError("QWEATHER_API_KEY 未设置，请检查 GitHub Secret。")
     if not CITY.strip():
@@ -203,27 +196,18 @@ def main():
 
     print(f"📍 城市: {CITY}  |  📅 {DATE_STR} {WEEKDAY}")
 
-    # 1. 城市 ID
     loc_id, city_name, lat, lon = city_lookup(CITY)
     print(f"🌐 LocationID: {loc_id}  ({city_name})")
 
-    # 2. 天气
     w = get_qweather(loc_id)
     print(f"🌤 {w['textDay']}/{w['textNight']}  {w['tempMin']}~{w['tempMax']}°C")
 
-    # 3. 空气
     air = get_qweather_air(loc_id)
-
-    # 4. 节日+农历
     holiday, lunar_str = get_calendar_info()
-
-    # 5. 一言
     hitokoto = get_hitokoto()
 
-    # ── 拼装消息 ──
     L = []
 
-    # 头部
     header = f"📆 *{esc(DATE_STR)}  {esc(WEEKDAY)}*"
     if lunar_str:
         header += f"\n📜 *农历*：{esc(lunar_str)}"
@@ -233,7 +217,6 @@ def main():
     L.append("━━━━━━━━━━━━━━━━")
     L.append(f"📍 城市：*{esc(city_name)}*")
 
-    # ── 天气块 ──
     L.append("")
     L.append(f"☀️ 白天：{esc(w['textDay'])}　　🌙 夜间：{esc(w['textNight'])}")
     L.append(f"🌡 *温　　度*：{esc(w['tempMin'])}°C ～ {esc(w['tempMax'])}°C")
@@ -252,7 +235,6 @@ def main():
     L.append(f"🔵 *气　　压*：{esc(w['pressure'])} hPa")
     L.append(f"👁 *能　见度*：{esc(w['vis'])} km")
 
-    # ── 空气块 ──
     if air:
         L.append("")
         L.append("━━━━━━━━━━━━━━━━")
@@ -265,7 +247,6 @@ def main():
         L.append(f"　　• O₃       ：{esc(air['o3'])} μg/m³")
         L.append(f"　　• CO      ：{esc(air['co'])} μg/m³")
 
-    # ── 一言 ──
     L.append("")
     L.append("━━━━━━━━━━━━━━━━━━")
     L.append(f"📖 *今日一言*")
