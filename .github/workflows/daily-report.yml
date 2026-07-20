@@ -23,4 +23,3 @@ jobs:
           CUSTOM_CITY: ${{ secrets.CUSTOM_CITY }}
           QWEATHER_API_KEY: ${{ secrets.QWEATHER_API_KEY }}
         run: python scripts/daily_report.py
-        run: python scripts/daily_report.py
