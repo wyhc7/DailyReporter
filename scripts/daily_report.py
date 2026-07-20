@@ -667,12 +667,14 @@ def main():
     L = []
 
     # 头栏
-    header = f"📆 {DATE_STR}  {WEEKDAY}"
+    L.append(f"📆 {DATE_STR}  {WEEKDAY}")
     if lunar_str:
-        header += f"   📜 农历：{lunar_str}"
-    if holiday:
-        header += f"   🎉 {holiday}"
-    L.append(header)
+        lunar_line = f"📜 农历：{lunar_str}"
+        if holiday:
+            lunar_line += f"   🎉 {holiday}"
+        L.append(lunar_line)
+    elif holiday:
+        L.append(f"🎉 {holiday}")
     L.append("━" * 24)
     L.append("")
     L.append(f"📍 城市：{city_name}")
