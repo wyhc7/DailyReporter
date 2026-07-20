@@ -243,7 +243,11 @@ def main():
     L.append(f"💨 *风　　力*：{esc(w['windDirDay'])}  {esc(w['windScaleDay'])}")
     L.append(f"🌧 *降水量*：{esc(w['precip'])} mm")
     uv = w['uvIndex']
-    uv_label = "弱" if uv <= 2 else "中等" if uv <= 5 else "强" if uv <= 7 else "极强"
+    try:
+        uv_num = int(uv)
+    except (ValueError, TypeError):
+        uv_num = 0
+    uv_label = "弱" if uv_num <= 2 else "中等" if uv_num <= 5 else "强" if uv_num <= 7 else "极强"
     L.append(f"☀️ *紫外线*：{esc(uv)}（{uv_label}）")
     L.append(f"🔵 *气　　压*：{esc(w['pressure'])} hPa")
     L.append(f"👁 *能　见度*：{esc(w['vis'])} km")
