@@ -5,10 +5,10 @@ from datetime import datetime, timezone, timedelta
 from urllib import request, parse
 
 # ── 配置 ──────────────────────────────────────────────
-CITY       = os.environ.get("CUSTOM_CITY", "常德")
+CITY       = os.environ.get("CUSTOM_CITY") or "常德"         # 空串兜底
 BOT_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
 CHAT_ID    = os.environ["TELEGRAM_CHAT_ID"]
-QW_KEY     = os.environ["QWEATHER_API_KEY"]          # 和风天气 Key（必须）
+QW_KEY     = os.environ.get("QWEATHER_API_KEY") or ""     # 和风天气 Key（必须）
 
 CST        = timezone(timedelta(hours=8))
 TODAY      = datetime.now(CST)
@@ -174,6 +174,12 @@ def esc(s):
 
 # ────── 主流程 ────────────────────────────────────────
 def main():
+    # ── 启动校验 ──
+    if not QW_KEY:
+        raise RuntimeError("QWEATHER_API_KEY 未设置，请检查 GitHub Secret。")
+    if not CITY.strip():
+        raise RuntimeError("城市名为空，请检查 CUSTOM_CITY Secret。")
+
     print(f"📍 城市: {CITY}  |  📅 {DATE_STR} {WEEKDAY}")
 
     # 1. 城市 ID
