@@ -258,30 +258,53 @@ def get_calendar_info():
     return holiday, lunar_str
 
 
-# ── 5. 一言 ───────────────────────────────────────────
+# ── 5. 一言（依官方文档 https://developer.hitokoto.cn/）───
+#
+#  请求地址：v1.hitokoto.cn（2 QPS） / international.v1.hitokoto.cn（20 QPS，带 2s 缓存）
+#  参数：c（分类，可多个），encode（json/text/js），charset（utf-8/gbk）
+#  分类：a=动画 b=漫画 c=游戏 d=文学 e=原创 f=网络 g=其他 h=影视 i=诗词 k=哲学 l=抖机灵
+#  注意：j（网易云）已于 2022.11 停用！
+#
 def get_hitokoto():
-    """一言，多重备用"""
-    # 主源
+    """一言。主站 → 国际站 → 句子迷 → 默认"""
+
+    # 所有有效分类（排除已停用的 j=网易云）
+    cats = ["a","b","c","d","e","f","g","h","i","k","l"]
+    base_params = {"encode": "json", "charset": "utf-8", "c": cats}
+
+    # 主源：v1.hitokoto.cn
     try:
-        url = "https://v1.hitokoto.cn/?c=a&c=d&c=e&c=f&c=g&c=h&c=i&c=j&c=k&c=l&encode=json"
-        with request.urlopen(url, timeout=8) as resp:
-            data = json.loads(resp.read().decode())
-        s, src = data.get("hitokoto","").strip(), data.get("from","").strip()
+        url = "https://v1.hitokoto.cn/?" + parse.urlencode(base_params, doseq=True)
+        data = fetch_json(url, timeout=8)
+        s = (data.get("hitokoto") or "").strip()
+        src = (data.get("from") or data.get("from_who") or "").strip()
         if s:
-            return f"{s}\n　—— {src}" if src else s
+            return f"「{s}」\n　—— {src}" if src else f"「{s}」"
     except Exception:
         pass
-    # 备源：国际版
+
+    # 备源1：international.v1.hitokoto.cn（官方国际站，20 QPS）
     try:
-        url = "https://international.v1.hitokoto.cn/?encode=json"
-        with request.urlopen(url, timeout=6) as resp:
-            data = json.loads(resp.read().decode())
-        s, src = data.get("hitokoto","").strip(), data.get("from","").strip()
+        url = "https://international.v1.hitokoto.cn/?" + parse.urlencode(base_params, doseq=True)
+        data = fetch_json(url, timeout=6)
+        s = (data.get("hitokoto") or "").strip()
+        src = (data.get("from") or data.get("from_who") or "").strip()
         if s:
-            return f"{s}\n　—— {src}" if src else s
+            return f"「{s}」\n　—— {src}" if src else f"「{s}」"
     except Exception:
         pass
-    return "✨ 新的一天，愿你心怀暖阳。\n　—— 每日速报"
+
+    # 备源2：句子迷
+    try:
+        data = fetch_json("https://api.xygeng.cn/one", timeout=6)
+        s = (data.get("data", {}).get("content") or "").strip()
+        src = (data.get("data", {}).get("origin") or "").strip()
+        if s:
+            return f"「{s}」\n　—— {src}" if src else f"「{s}」"
+    except Exception:
+        pass
+
+    return "「✨ 新的一天，愿你心怀暖阳。」\n　—— 每日速报"
 
 
 # ── 6. 发送 Telegram ─────────────────────────────────
@@ -318,55 +341,76 @@ def main():
 
     L = []
 
+    # ── 头部 ──
     header = f"📆 *{esc(DATE_STR)}  {esc(WEEKDAY)}*"
     if lunar_str:
-        header += f"\n📜 *农历*：{esc(lunar_str)}"
+        header += f"\n📜 *农历 ·* {esc(lunar_str)}"
     if holiday:
-        header += f"   🎉  *{esc(holiday)}*"
+        header += f"　🎉 *今日 ·* {esc(holiday)}"
     L.append(header)
-    L.append("━━━━━━━━━━━━━━━━")
-    L.append(f"📍 城市：*{esc(city_name)}*")
+    L.append("——————————————")
 
     L.append("")
-    L.append(f"☀️ 白天：{esc(w['textDay'])}　　🌙 夜间：{esc(w['textNight'])}")
-    L.append(f"🌡 *温　　度*：{esc(w['tempMin'])}°C ～ {esc(w['tempMax'])}°C")
-    L.append(f"💧 *湿　　度*：{esc(w['humidity'])}%")
-    L.append(f"🌅 *日　　出*：{esc(w['sunrise'])}")
-    L.append(f"🌇 *日　　落*：{esc(w['sunset'])}")
-    L.append(f"💨 *风　　力*：{esc(w['windDirDay'])}  {esc(w['windScaleDay'])}")
-    L.append(f"🌧 *降水量*：{esc(w['precip'])} mm")
+    L.append(f"📍 *{esc(city_name)}*")
+
+    # ── 天气卡片 ──
+    # 天气描述→emoji 映射
+    wx_emoji = {
+        "晴":"☀️","少云":"🌤","晴间多云":"🌤","多云":"⛅","阴":"☁️","霾":"🌫",
+        "扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫","雨":"🌧","小雨":"🌦",
+        "中雨":"🌧","大雨":"🌧","暴雨":"🌧","雷阵雨":"⛈","雪":"❄️","小雪":"🌨",
+        "中雪":"❄️","大雪":"❄️","暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
+    }
+    day_emoji = wx_emoji.get(w['textDay'], "🌡")
+    night_emoji = wx_emoji.get(w['textNight'], "🌡")
+
+    L.append("")
+    L.append(f"{day_emoji} 白天 · {esc(w['textDay'])}　　　{night_emoji} 夜间 · {esc(w['textNight'])}")
+    L.append(f"🌡 温度  {esc(w['tempMin'])}°C ～ {esc(w['tempMax'])}°C")
+    L.append(f"💧 湿度  {esc(w['humidity'])}%　　　☂ 降水  {esc(w['precip'])} mm")
+    L.append(f"🌅 日出  {esc(w['sunrise'])}　　　　🌇 日落  {esc(w['sunset'])}")
+    L.append(f"🍃 {esc(w['windDirDay'])}风  {esc(w['windScaleDay'])}")
     uv = w['uvIndex']
-    try:
-        uv_num = int(uv)
-    except (ValueError, TypeError):
-        uv_num = 0
-    uv_label = "弱" if uv_num <= 2 else "中等" if uv_num <= 5 else "强" if uv_num <= 7 else "极强"
-    L.append(f"☀️ *紫外线*：{esc(uv)}（{uv_label}）")
-    L.append(f"🔵 *气　　压*：{esc(w['pressure'])} hPa")
-    L.append(f"👁 *能　见度*：{esc(w['vis'])} km")
+    try: uv_num = int(uv)
+    except: uv_num = 0
+    uv_label = "弱" if uv_num<=2 else "中等" if uv_num<=5 else "强" if uv_num<=7 else "极强"
+    L.append(f"☀️ 紫外线 {esc(uv)}（{uv_label}）　　　🔵 气压  {esc(w['pressure'])} hPa")
+    L.append(f"👁 能见度  {esc(w['vis'])} km")
 
+    # ── 空气质量卡片 ──
     if air:
-        L.append("")
-        L.append("━━━━━━━━━━━━━━━━")
-        L.append(f"🌬️ **空气质量**：{esc(air['label'])}")
-        # 首要污染物 N/A 时不显示
-        primary = air['primary']
-        if primary and primary not in ("NA", "N/A", "无", "?"):
-            L.append(f"  首要污染物：{esc(primary)}")
-        L.append(f"　　• PM₂ ₅ ：{esc(air['pm2p5'])} μg/m³")
-        L.append(f"　　• PM₁₀ ：{esc(air['pm10'])} μg/m³")
-        L.append(f"　　• SO₂     ：{esc(air['so2'])} μg/m³")
-        L.append(f"　　• NO₂    ：{esc(air['no2'])} μg/m³")
-        L.append(f"　　• O₃       ：{esc(air['o3'])} μg/m³")
-        L.append(f"　　• CO      ：{esc(air['co'])} μg/m³")
+        # 污染物达标染色：粗劣用 AQI 分段
+        def _tag(v):
+            try:
+                x = float(v)
+                if x <= 50: return f"🟢 {esc(v)}"
+                if x <= 100: return f"🟡 {esc(v)}"
+                return f"🔴 {esc(v)}"
+            except: return esc(v)
 
+        L.append("")
+        L.append("——————————————")
+        L.append(f"🌬️ *空气 ·* {esc(air['label'])}")
+        primary = air['primary']
+        if primary and primary not in ("NA","N/A","无","?"):
+            L.append(f"  首要污染物：{esc(primary)}")
+        L.append(
+            f"     PM₂ ₅ {_tag(air['pm2p5'])}　　PM₁₀ {_tag(air['pm10'])}"
+            f"　　NO₂ {_tag(air['no2'])}"
+        )
+        L.append(
+            f"     SO₂ {_tag(air['so2'])}　　　O₃ {_tag(air['o3'])}"
+            f"　　　CO {_tag(air['co'])}"
+        )
+
+    # ── 一言 ──
     L.append("")
-    L.append("━━━━━━━━━━━━━━━━━━")
-    L.append(f"📖 *今日一言*")
+    L.append("——————————————")
+    L.append(f"📖 *一言*")
     L.append(esc(hitokoto))
 
     L.append("")
-    L.append(f"_{esc('自动推送 · GitHub Actions ·')} {esc(DATE_STR)}_")
+    L.append(f"_{esc('⏰ 每日自动推送 · GitHub Actions')}_")
 
     message = "\n".join(L)
     print("\n═══ 最终消息 ═══")
