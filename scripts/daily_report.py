@@ -223,7 +223,7 @@ def gregorian_to_lunar(dt: datetime):
     tg = HEAVENLY_STEMS[(ly - 4) % 10]
     dz = EARTHLY_BRANCHES[(ly - 4) % 12]
     zodiac = ZODIAC[(ly - 4) % 12]
-    month_str = ("闰" if is_leap else "") + LUNAR_MONTHS[lm - 1]
+    month_str = ("闰" if is_leap else "") + LUNAR_MONTHS[lm - 1] + "月"
     day_str = LUNAR_DAYS[diff]
     return f"{tg}{dz}年（{zodiac}）{month_str}{day_str}"
 
@@ -339,76 +339,53 @@ def main():
     holiday, lunar_str = get_calendar_info()
     hitokoto = get_hitokoto()
 
+    # ── 消息拼装 ──
     L = []
 
-    # ── 头部 ──
-    header = f"📆 *{esc(DATE_STR)}  {esc(WEEKDAY)}*"
+    # 头栏
+    L.append(f"📆  *{esc(DATE_STR)}*  ·  *{esc(WEEKDAY)}*")
     if lunar_str:
-        header += f"\n📜 *农历 ·* {esc(lunar_str)}"
+        L.append(f"📜  {esc(lunar_str)}")
     if holiday:
-        header += f"　🎉 *今日 ·* {esc(holiday)}"
-    L.append(header)
-    L.append("——————————————")
-
+        L.append(f"🎉  *{esc(holiday)}*")
     L.append("")
-    L.append(f"📍 *{esc(city_name)}*")
 
-    # ── 天气卡片 ──
-    # 天气描述→emoji 映射
+    L.append(f"📍  *{esc(city_name)}*")
+    L.append("")
+
+    # ── 天气 ──
     wx_emoji = {
-        "晴":"☀️","少云":"🌤","晴间多云":"🌤","多云":"⛅","阴":"☁️","霾":"🌫",
-        "扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫","雨":"🌧","小雨":"🌦",
-        "中雨":"🌧","大雨":"🌧","暴雨":"🌧","雷阵雨":"⛈","雪":"❄️","小雪":"🌨",
-        "中雪":"❄️","大雪":"❄️","暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
+        "晴":"☀️","少云":"🌤","晴间多云":"🌤","多云":"⛅","阴":"☁️",
+        "霾":"🌫","扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫",
+        "雨":"🌧","小雨":"🌦","中雨":"🌧","大雨":"🌧","暴雨":"🌧",
+        "雷阵雨":"⛈","雪":"❄️","小雪":"🌨","中雪":"❄️","大雪":"❄️",
+        "暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
     }
-    day_emoji = wx_emoji.get(w['textDay'], "🌡")
-    night_emoji = wx_emoji.get(w['textNight'], "🌡")
+    d_e = wx_emoji.get(w['textDay'], "🌡")
+    n_e = wx_emoji.get(w['textNight'], "🌡")
 
-    L.append("")
-    L.append(f"{day_emoji} 白天 · {esc(w['textDay'])}　　　{night_emoji} 夜间 · {esc(w['textNight'])}")
-    L.append(f"🌡 温度  {esc(w['tempMin'])}°C ～ {esc(w['tempMax'])}°C")
-    L.append(f"💧 湿度  {esc(w['humidity'])}%　　　☂ 降水  {esc(w['precip'])} mm")
-    L.append(f"🌅 日出  {esc(w['sunrise'])}　　　　🌇 日落  {esc(w['sunset'])}")
-    L.append(f"🍃 {esc(w['windDirDay'])}风  {esc(w['windScaleDay'])}")
+    L.append(f"{d_e}  *白天*  {esc(w['textDay'])}　　　　{n_e}  *夜间*  {esc(w['textNight'])}")
+    L.append(f"🌡  *{esc(w['tempMin'])} ～ {esc(w['tempMax'])} °C*")
+    L.append(f"💧  {esc(w['humidity'])}%　　　☔  {esc(w['precip'])} mm　　　🍃  {esc(w['windDirDay'])}  {esc(w['windScaleDay'])}")
+    L.append(f"🌅  {esc(w['sunrise'])}　　　　🌇  {esc(w['sunset'])}")
     uv = w['uvIndex']
     try: uv_num = int(uv)
     except: uv_num = 0
     uv_label = "弱" if uv_num<=2 else "中等" if uv_num<=5 else "强" if uv_num<=7 else "极强"
-    L.append(f"☀️ 紫外线 {esc(uv)}（{uv_label}）　　　🔵 气压  {esc(w['pressure'])} hPa")
-    L.append(f"👁 能见度  {esc(w['vis'])} km")
+    L.append(f"☀️  紫外线 {esc(uv)}（{uv_label}）　　　🔵  气压 {esc(w['pressure'])} hPa　　　👁  能见度 {esc(w['vis'])} km")
+    L.append("")
 
-    # ── 空气质量卡片 ──
+    # ── 空气 ──
     if air:
-        # 污染物达标染色：粗劣用 AQI 分段
-        def _tag(v):
-            try:
-                x = float(v)
-                if x <= 50: return f"🟢 {esc(v)}"
-                if x <= 100: return f"🟡 {esc(v)}"
-                return f"🔴 {esc(v)}"
-            except: return esc(v)
-
-        L.append("")
-        L.append("——————————————")
-        L.append(f"🌬️ *空气 ·* {esc(air['label'])}")
+        L.append(f"🌬️  *空气*  {esc(air['label'])}")
         primary = air['primary']
         if primary and primary not in ("NA","N/A","无","?"):
-            L.append(f"  首要污染物：{esc(primary)}")
-        L.append(
-            f"     PM₂ ₅ {_tag(air['pm2p5'])}　　PM₁₀ {_tag(air['pm10'])}"
-            f"　　NO₂ {_tag(air['no2'])}"
-        )
-        L.append(
-            f"     SO₂ {_tag(air['so2'])}　　　O₃ {_tag(air['o3'])}"
-            f"　　　CO {_tag(air['co'])}"
-        )
+            L.append(f"首要污染物：{esc(primary)}")
+        L.append(f"PM₂ ₅ {esc(air['pm2p5'])}　　PM₁₀ {esc(air['pm10'])}　　NO₂ {esc(air['no2'])}　　SO₂ {esc(air['so2'])}　　O₃ {esc(air['o3'])}　　CO {esc(air['co'])}")
+        L.append("")
 
     # ── 一言 ──
-    L.append("")
-    L.append("——————————————")
-    L.append(f"📖 *一言*")
-    L.append(esc(hitokoto))
-
+    L.append(f"📖  {esc(hitokoto)}")
     L.append("")
     L.append(f"_{esc('⏰ 每日自动推送 · GitHub Actions')}_")
 
