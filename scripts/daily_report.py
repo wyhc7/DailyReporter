@@ -675,7 +675,7 @@ def main():
         L.append(lunar_line)
     elif holiday:
         L.append(f"🎉 {holiday}")
-    L.append("━" * 24)
+    L.append("─" * 28)
     L.append("")
     L.append(f"📍 城市：{city_name}")
     L.append("")
@@ -718,7 +718,7 @@ def main():
 
     # ── 空气 ──
     if air:
-        L.append("━" * 24)
+        L.append("─" * 28)
         L.append("")
         L.append(f"🌬️ 空气质量：{air['label']}")
         primary = air['primary']
@@ -733,7 +733,7 @@ def main():
         L.append("")
 
     # ── 一言 ──
-    L.append("━" * 24)
+    L.append("─" * 28)
     L.append("")
     L.append(f"📖 今日一言")
     L.append(hitokoto)
