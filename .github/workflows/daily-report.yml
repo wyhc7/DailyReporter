@@ -1,128 +1,27 @@
-name: Daily Report to Telegram (Enhanced)
+name: 每日速报推送
 
 on:
   schedule:
-    # 每天UTC时间0点运行（北京时间早上8点）和UTC 8点（北京时间下午4点）
-    - cron: '0 0 * * *'
-    - cron: '0 8 * * *'
-  workflow_dispatch:  # 允许手动触发
-    inputs:
-      city:
-        description: '城市名称（覆盖配置）'
-        required: false
-        default: ''
-      config_file:
-        description: '自定义配置文件路径'
-        required: false
-        default: 'config.json'
-      test_mode:
-        description: '测试模式（仅生成不发送）'
-        required: false
-        default: false
-        type: boolean
-
-permissions:
-  contents: read
+    # 北京时间每天早上 7:00（UTC 23:00）
+    - cron: '0 23 * * *'
+  workflow_dispatch:
 
 jobs:
-  daily-report:
+  report:
     runs-on: ubuntu-latest
-    
     steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-    
-    - name: Set up Python
-      uses: actions/setup-python@v5
-      with:
-        python-version: '3.10'
-    
-    - name: Install dependencies
-      run: |
-        pip install -r requirements.txt
-    
-    - name: Create config file from template
-      env:
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        HEWEATHER_API_KEY: ${{ secrets.HEWEATHER_API_KEY }}
-        OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
-        AQICN_API_KEY: ${{ secrets.AQICN_API_KEY }}
-        DEFAULT_CITY: ${{ secrets.DEFAULT_CITY || '常德' }}
-      run: |
-        mkdir -p scripts
-        
-        # 创建或更新配置文件
-        if [ -f config.example.json ]; then
-          cp config.example.json config.json
-          echo "已从模板创建配置文件"
-        else
-          # 创建最小配置
-          cat > config.json << EOF
-          {
-            "TELEGRAM_BOT_TOKEN": "${{ secrets.TELEGRAM_BOT_TOKEN || '' }}",
-            "TELEGRAM_CHAT_ID": "${{ secrets.TELEGRAM_CHAT_ID || '' }}",
-            "HEWEATHER_API_KEY": "${{ secrets.HEWEATHER_API_KEY || '' }}",
-            "OPENWEATHER_API_KEY": "${{ secrets.OPENWEATHER_API_KEY || '' }}",
-            "AQICN_API_KEY": "${{ secrets.AQICN_API_KEY || '' }}",
-            "CITY": "${{ github.event.inputs.city || secrets.DEFAULT_CITY || '常德' }}"
-          }
-          EOF
-          echo "已创建基础配置文件"
-        fi
-        
-        echo "运行城市: ${{ github.event.inputs.city || secrets.DEFAULT_CITY || '常德' }}"
-    
-    - name: Run daily report script
-      env:
-        # 传递环境变量备用
-        TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        HEWEATHER_API_KEY: ${{ secrets.HEWEATHER_API_KEY }}
-        OPENWEATHER_API_KEY: ${{ secrets.OPENWEATHER_API_KEY }}
-        AQICN_API_KEY: ${{ secrets.AQICN_API_KEY }}
-      run: |
-        # 准备命令行参数
-        CMD_ARGS=""
-        
-        # 添加城市参数
-        if [ -n "${{ github.event.inputs.city }}" ]; then
-          CMD_ARGS="$CMD_ARGS --city '${{ github.event.inputs.city }}'"
-        fi
-        
-        # 添加配置文件参数
-        if [ -n "${{ github.event.inputs.config_file }}" ] && [ "${{ github.event.inputs.config_file }}" != "config.json" ]; then
-          CMD_ARGS="$CMD_ARGS --config '${{ github.event.inputs.config_file }}'"
-        fi
-        
-        # 添加测试模式参数
-        if [ "${{ github.event.inputs.test_mode }}" = "true" ]; then
-          CMD_ARGS="$CMD_ARGS --test"
-        fi
-        
-        # 执行脚本
-        echo "执行命令: python scripts/daily_report.py $CMD_ARGS"
-        
-        if [ -f scripts/daily_report.py ]; then
-          python scripts/daily_report.py $CMD_ARGS
-        else
-          echo "错误: scripts/daily_report.py 不存在"
-          exit 1
-        fi
-    
-    - name: Notify on failure
-      if: failure()
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const sha = context.sha.substring(0, 7);
-          const runUrl = `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-          
-          // 创建Issue通知失败
-          github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: `[Auto] 每日报告执行失败 (${sha})`,
-            body: `每日报告脚本执行失败\n\n运行链接: ${runUrl}\n提交: ${context.sha}\n\n请在Actions页面查看详细日志。`,
-            labels: ['automated', 'bug']
-          });
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Report
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CUSTOM_CITY: ${{ secrets.CUSTOM_CITY }}
+          QWEATHER_API_KEY: ${{ secrets.QWEATHER_API_KEY }}
+        run: python scripts/daily_report.py

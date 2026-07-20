@@ -1,568 +1,265 @@
 #!/usr/bin/env python3
-"""
-每日信息推送脚本（增强版）
-自动获取日期、农历、节日、天气和一言，发送到Telegram
-支持农历日期、多天气API、配置文件管理
-使用更稳定的lunar-python库替代已废弃的lunardate
-"""
+"""每日速报 —— 和风天气 / 节日 / 农历 / 一言 → Telegram"""
+import os, json, sys, re, traceback
+from datetime import datetime, timezone, timedelta
+from urllib import request, parse
 
-import os
-import sys
-import json
-import requests
-import argparse
-from datetime import datetime, date
-from typing import Dict, Optional, Tuple, List
-import logging
+# ── 配置 ──────────────────────────────────────────────
+CITY       = os.environ.get("CUSTOM_CITY", "常德")
+BOT_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
+CHAT_ID    = os.environ["TELEGRAM_CHAT_ID"]
+QW_KEY     = os.environ["QWEATHER_API_KEY"]          # 和风天气 Key（必须）
 
-# 尝试导入现代农历日期库
-try:
-    from lunar_python import Lunar, Solar
-    LUNAR_AVAILABLE = True
-    logger_import = "已加载lunar-python库"
-except ImportError:
-    try:
-        # 回退到传统库（可能会失败）
-        from lunardate import LunarDate
-        LUNAR_AVAILABLE = True
-        logger_import = "已加载lunardate库（旧版）"
-    except ImportError:
-        LUNAR_AVAILABLE = False
-        logger_import = "未找到农历日期库"
+CST        = timezone(timedelta(hours=8))
+TODAY      = datetime.now(CST)
+DATE_STR   = TODAY.strftime("%Y-%m-%d")
+WEEKDAYS   = ["星期一","星期二","星期三","星期四","星期五","星期六","星期日"]
+WEEKDAY    = WEEKDAYS[TODAY.weekday()]
 
-# 配置日志
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__)
-logger.info(logger_import)
 
-class DailyReport:
-    def __init__(self, config_file: str = None):
-        """初始化报告系统，支持配置文件"""
-        self.config = self.load_config(config_file)
-        
-        # 从配置文件或环境变量获取配置
-        self.bot_token = self.get_config('TELEGRAM_BOT_TOKEN')
-        self.chat_id = self.get_config('TELEGRAM_CHAT_ID')
-        self.weather_api_key = self.get_config('OPENWEATHER_API_KEY')
-        self.heweather_api_key = self.get_config('HEWEATHER_API_KEY')
-        self.aqicn_api_key = self.get_config('AQICN_API_KEY')
-        self.city = self.get_config('CITY', '常德')
-        
-        # 验证必要环境变量
-        self.validate_required_configs()
-        
-        # 缓存天气数据
-        self.weather_cache = {}
-    
-    def load_config(self, config_file: str) -> Dict:
-        """加载配置文件"""
-        config = {}
-        
-        # 1. 尝试加载配置文件
-        if config_file and os.path.exists(config_file):
-            try:
-                with open(config_file, 'r', encoding='utf-8') as f:
-                    config.update(json.load(f))
-                logger.info(f"已加载配置文件: {config_file}")
-            except Exception as e:
-                logger.warning(f"配置文件加载失败: {e}")
-        
-        # 2. 加载环境变量
-        env_keys = [
-            'TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID',
-            'OPENWEATHER_API_KEY', 'HEWEATHER_API_KEY', 'AQICN_API_KEY',
-            'CITY', 'DEFAULT_CITY'
-        ]
-        for key in env_keys:
-            value = os.getenv(key)
-            if value:
-                config[key] = value
-        
-        return config
-    
-    def get_config(self, key: str, default: str = None) -> str:
-        """获取配置值"""
-        return self.config.get(key, default)
-    
-    def validate_required_configs(self):
-        """验证必要配置"""
-        missing = []
-        
-        required = ['TELEGRAM_BOT_TOKEN', 'TELEGRAM_CHAT_ID']
-        for key in required:
-            if not self.get_config(key):
-                missing.append(key)
-        
-        # OpenWeatherMap 或 和风天气至少需要一个
-        if not self.get_config('OPENWEATHER_API_KEY') and not self.get_config('HEWEATHER_API_KEY'):
-            missing.append('OPENWEATHER_API_KEY 或 HEWEATHER_API_KEY（至少需要一个）')
-        
-        if missing:
-            logger.error(f"缺少必要的配置: {', '.join(missing)}")
-            sys.exit(1)
-    
-    def get_today_info(self) -> Tuple[str, str, str]:
-        """获取今日日期、星期、农历和节日信息"""
-        today = date.today()
-        date_str = today.strftime('%Y年%m月%d日')
-        weekday_str = today.strftime('%A')
-        
-        # 获取农历日期
-        lunar_info = self.get_lunar_info(today)
-        
-        # 节日信息
-        holiday = self.get_holiday_info(today, lunar_info)
-        
-        return date_str, weekday_str, lunar_info, holiday
-    
-    def get_lunar_info(self, date_obj: date) -> str:
-        """获取农历信息"""
-        if not LUNAR_AVAILABLE:
-            return "农历日期（需安装lunar-python库）"
-        
+# ── 1. 城市 → 和风 Location ID ────────────────────────
+def city_lookup(city: str) -> tuple:
+    """返回 (location_id, city_name, lat, lon)"""
+    url = (
+        "https://geoapi.qweather.com/v2/city/lookup?"
+        + parse.urlencode({"location": city, "key": QW_KEY, "number": 1})
+    )
+    with request.urlopen(url, timeout=12) as resp:
+        data = json.loads(resp.read().decode())
+    if data.get("code") != "200" or not data.get("location"):
+        raise ValueError(f"找不到城市: {city}（{data.get('code')}）")
+    loc = data["location"][0]
+    return loc["id"], loc.get("name", city), float(loc["lat"]), float(loc["lon"])
+
+
+# ── 2. 和风 7 天预报 ──────────────────────────────────
+def get_qweather(loc_id: str):
+    """和风天气 7d 预报，返回今天的数据字典"""
+    url = (
+        "https://devapi.qweather.com/v7/weather/7d?"
+        + parse.urlencode({"location": loc_id, "key": QW_KEY})
+    )
+    with request.urlopen(url, timeout=12) as resp:
+        data = json.loads(resp.read().decode())
+    if data.get("code") != "200":
+        raise RuntimeError(f"天气API失败: {data.get('code')}")
+
+    today = data["daily"][0]
+
+    # 风力等级转文字
+    wind_scale_map = {
+        1:"微风", 2:"轻风", 3:"微风", 4:"和风", 5:"清风",
+        6:"强风", 7:"疾风", 8:"大风", 9:"烈风", 10:"狂风",
+        11:"暴风", 12:"台风"
+    }
+    def scale_text(raw):
         try:
-            # 使用lunar-python库
-            solar = Solar.fromYmd(date_obj.year, date_obj.month, date_obj.day)
-            lunar = solar.getLunar()
-            
-            # 农历月份名称
-            month_names = ['', '正月', '二月', '三月', '四月', '五月', '六月',
-                          '七月', '八月', '九月', '十月', '冬月', '腊月']
-            
-            # 农历日期名称
-            day_names = ['', '初一', '初二', '初三', '初四', '初五', '初六', '初七', '初八', '初九', '初十',
-                        '十一', '十二', '十三', '十四', '十五', '十六', '十七', '十八', '十九', 'twenty',
-                        '廿一', '廿二', '廿三', '廿四', '廿五', '廿六', '廿七', '廿八', '廿九', '三十']
-            
-            # 获取农历月份和日期
-            lunar_month = lunar.getMonth()
-            lunar_day = lunar.getDay()
-            
-            # 月份名称
-            lunar_month_name = month_names[lunar_month] if lunar_month < len(month_names) else f"{lunar_month}月"
-            
-            # 日期名称
-            if lunar_day < len(day_names):
-                lunar_day_name = day_names[lunar_day]
-            elif lunar_day == 30:
-                lunar_day_name = '三十'
-            elif lunar_day == 20:
-                lunar_day_name = '二十'
-            else:
-                lunar_day_name = str(lunar_day)
-            
-            # 农历年份
-            lunar_year = lunar.getYearInGanZhi()
-            
-            return f"农历{lunar_month_name}{lunar_day_name}（{lunar_year}）"
-            
-        except Exception as e:
-            logger.error(f"获取农历日期失败: {e}")
-            return "农历日期获取失败"
-    
-    def get_holiday_info(self, date_obj: date, lunar_info: str) -> str:
-        """获取节日信息"""
-        holidays = []
-        month_day = date_obj.strftime('%m%d')
-        
-        # 公历节日
-        solar_holidays = {
-            '0101': '元旦',
-            '0214': '情人节',
-            '0308': '国际妇女节',
-            '0401': '愚人节',
-            '0501': '国际劳动节',
-            '0601': '国际儿童节',
-            '0701': '建党节',
-            '0801': '建军节',
-            '1001': '国庆节',
-            '1225': '圣诞节',
-        }
-        
-        if month_day in solar_holidays:
-            holidays.append(solar_holidays[month_day])
-        
-        # 农历节日判断（如果库可用）
-        if LUNAR_AVAILABLE:
-            try:
-                solar = Solar.fromYmd(date_obj.year, date_obj.month, date_obj.day)
-                lunar = solar.getLunar()
-                
-                # 获取农历月份和日期
-                lunar_month = lunar.getMonth()
-                lunar_day = lunar.getDay()
-                lunar_month_day = f"{lunar_month:02d}{lunar_day:02d}"
-                
-                lunar_holidays = {
-                    '0101': '春节',
-                    '0115': '元宵节',
-                    '0505': '端午节',
-                    '0707': '七夕节',
-                    '0815': '中秋节',
-                    '0909': '重阳节',
-                    '1208': '腊八节',
-                    '1230': '除夕',
-                }
-                
-                if lunar_month_day in lunar_holidays:
-                    holidays.append(lunar_holidays[lunar_month_day])
-            except Exception as e:
-                logger.debug(f"获取农历节日失败: {e}")
-                pass
-        
-        if holidays:
-            return "、".join(holidays)
-        else:
-            return "普通日子"
-    
-    def get_weather_info(self) -> Dict:
-        """获取天气信息（多API支持）"""
-        # 优先使用和风天气API（中文更准确）
-        weather = self.get_heweather_info()
-        
-        # 如果和风天气失败，尝试OpenWeatherMap
-        if weather.get('description') == '获取失败' and self.get_config('OPENWEATHER_API_KEY'):
-            weather = self.get_openweather_info()
-        
-        # 获取空气质量指数
-        if self.get_config('AQICN_API_KEY'):
-            aqi_info = self.get_aqi_info()
-            weather.update({'aqi': aqi_info})
-        elif self.heweather_api_key:
-            # 如果使用和风天气，可以直接获取AQI
-            pass
-        else:
-            weather['aqi'] = {'value': 'N/A', 'level': 'N/A', 'desc': 'N/A'}
-        
-        return weather
-    
-    def get_heweather_info(self) -> Dict:
-        """使用和风天气API（更准确的中国天气）"""
-        if not self.get_config('HEWEATHER_API_KEY'):
-            return {'description': '获取失败', 'city': self.city}
-        
-        try:
-            # 和风天气API - 当前天气
-            base_url = "https://devapi.qweather.com/v7/weather/now"
-            params = {
-                'location': self.city,
-                'key': self.get_config('HEWEATHER_API_KEY'),
-                'lang': 'zh'
-            }
-            
-            response = requests.get(base_url, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get('code') != '200':
-                return {'description': '获取失败', 'city': self.city}
-            
-            # 获取3天预报（用于日出日落）
-            daily_url = "https://devapi.qweather.com/v7/weather/3d"
-            daily_response = requests.get(daily_url, params=params, timeout=15)
-            daily_data = daily_response.json()
-            
-            # 获取生活指数
-            indices_url = "https://devapi.qweather.com/v7/indices/1d"
-            indices_params = params.copy()
-            indices_params.update({'type': '1,3,9'})  # 舒适度、穿衣、紫外线
-            indices_response = requests.get(indices_url, params=indices_params, timeout=15)
-            indices_data = indices_response.json()
-            
-            now = data.get('now', {})
-            today_forecast = daily_data.get('daily', [{}])[0] if daily_data.get('code') == '200' else {}
-            
-            weather = {
-                'city': self.city,
-                'description': now.get('text', '未知'),
-                'temp': now.get('temp', 'N/A'),
-                'feels_like': now.get('feelsLike', 'N/A'),
-                'temp_min': today_forecast.get('tempMin', 'N/A'),
-                'temp_max': today_forecast.get('tempMax', 'N/A'),
-                'humidity': now.get('humidity', 'N/A'),
-                'pressure': now.get('pressure', 'N/A'),
-                'wind_speed': now.get('windSpeed', 'N/A'),
-                'wind_scale': now.get('windScale', 'N/A'),
-                'wind_dir': now.get('windDir', 'N/A'),
-                'vis': now.get('vis', 'N/A'),
-                'cloud': now.get('cloud', 'N/A'),
-                'sunrise': today_forecast.get('sunrise', 'N/A'),
-                'sunset': today_forecast.get('sunset', 'N/A'),
-                'uv_index': today_forecast.get('uvIndex', 'N/A'),
-                'precip': today_forecast.get('precip', '0'),
-                'source': '和风天气'
-            }
-            
-            # 添加生活指数
-            if indices_data.get('code') == '200':
-                indices = {}
-                for item in indices_data.get('daily', []):
-                    indices[item.get('type')] = item
-                weather['indices'] = indices
-            
-            return weather
-            
-        except Exception as e:
-            logger.error(f"和风天气API失败: {e}")
-            return {'description': '获取失败', 'city': self.city}
-    
-    def get_openweather_info(self) -> Dict:
-        """使用OpenWeatherMap API（备用）"""
-        try:
-            base_url = "http://api.openweathermap.org/data/2.5/weather"
-            params = {
-                'q': self.city,
-                'appid': self.get_config('OPENWEATHER_API_KEY'),
-                'units': 'metric',
-                'lang': 'zh_cn'
-            }
-            
-            response = requests.get(base_url, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            
-            weather = {
-                'city': self.city,
-                'description': data.get('weather', [{}])[0].get('description', '未知'),
-                'temp': data.get('main', {}).get('temp', 'N/A'),
-                'temp_min': data.get('main', {}).get('temp_min', 'N/A'),
-                'temp_max': data.get('main', {}).get('temp_max', 'N/A'),
-                'humidity': data.get('main', {}).get('humidity', 'N/A'),
-                'pressure': data.get('main', {}).get('pressure', 'N/A'),
-                'wind_speed': data.get('wind', {}).get('speed', 'N/A'),
-                'wind_dir': data.get('wind', {}).get('deg', 'N/A'),
-                'sunrise': datetime.fromtimestamp(data.get('sys', {}).get('sunrise', 0)).strftime('%H:%M') if data.get('sys', {}).get('sunrise') else 'N/A',
-                'sunset': datetime.fromtimestamp(data.get('sys', {}).get('sunset', 0)).strftime('%H:%M') if data.get('sys', {}).get('sunset') else 'N/A',
-                'clouds': data.get('clouds', {}).get('all', 0),
-                'visibility': data.get('visibility', 0),
-                'source': 'OpenWeatherMap'
-            }
-            
-            return weather
-            
-        except Exception as e:
-            logger.error(f"OpenWeatherMap API失败: {e}")
-            return {'description': '获取失败', 'city': self.city}
-    
-    def get_aqi_info(self) -> Dict:
-        """获取空气质量指数"""
-        try:
-            # 使用aqicn.org API
-            url = f"https://api.waqi.info/feed/{self.city}/"
-            params = {
-                'token': self.get_config('AQICN_API_KEY')
-            }
-            
-            response = requests.get(url, params=params, timeout=15)
-            response.raise_for_status()
-            data = response.json()
-            
-            if data.get('status') == 'ok':
-                aqi_data = data.get('data', {})
-                aqi = aqi_data.get('aqi', 0)
-                iaqi = aqi_data.get('iaqi', {})
-                
-                # AQI等级描述
-                aqi_levels = {
-                    (0, 50): {'level': '优', 'color': '绿色'},
-                    (51, 100): {'level': '良', 'color': '黄色'},
-                    (101, 150): {'level': '轻度污染', 'color': '橙色'},
-                    (151, 200): {'level': '中度污染', 'color': '红色'},
-                    (201, 300): {'level': '重度污染', 'color': '紫色'},
-                    (301, float('inf')): {'level': '严重污染', 'color': '褐红色'}
-                }
-                
-                level_desc = '未知'
-                for (low, high), desc in aqi_levels.items():
-                    if low <= aqi <= high:
-                        level_desc = desc['level']
-                        break
-                
-                return {
-                    'value': aqi,
-                    'level': level_desc,
-                    'desc': '',
-                    'pm25': iaqi.get('pm25', {}).get('v', 'N/A'),
-                    'pm10': iaqi.get('pm10', {}).get('v', 'N/A'),
-                    'o3': iaqi.get('o3', {}).get('v', 'N/A'),
-                    'no2': iaqi.get('no2', {}).get('v', 'N/A'),
-                    'so2': iaqi.get('so2', {}).get('v', 'N/A'),
-                    'co': iaqi.get('co', {}).get('v', 'N/A')
-                }
-            
-            return {'value': 'N/A', 'level': 'N/A', 'desc': 'N/A'}
-            
-        except Exception as e:
-            logger.error(f"获取AQI失败: {e}")
-            return {'value': 'N/A', 'level': 'N/A', 'desc': 'N/A'}
-    
-    def get_hitokoto(self) -> str:
-        """获取一言"""
-        try:
-            response = requests.get('https://v1.hitokoto.cn/', timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            return f"{data.get('hitokoto', '')} —— {data.get('from', '')}"
+            w = int(raw.split("-")[0])
+            return f"{raw}级（{wind_scale_map.get(w, raw+'级')}）"
         except:
-            fallback_quotes = [
-                "岁月不居，时节如流。",
-                "日日是好日，处处是风景。",
-                "心随朗月高，志与秋霜洁。",
-                "晨起开门雪满山，雪晴云淡日光寒。",
-                "春风得意马蹄疾，一日看尽长安花。"
-            ]
-            import random
-            return random.choice(fallback_quotes)
-    
-    def generate_message(self) -> str:
-        """生成完整消息"""
-        # 获取所有信息
-        date_str, weekday_str, lunar_info, holiday = self.get_today_info()
-        weather = self.get_weather_info()
-        hitokoto = self.get_hitokoto()
-        
-        # 构建消息
-        message = f"📅 *每日晨报* 📅\n\n"
-        message += f"🗓️ 公历：{date_str} {weekday_str}\n"
-        message += f"🌙 农历：{lunar_info}\n"
-        
-        if holiday != "普通日子":
-            message += f"🎉 节日：{holiday}\n"
+            return raw
+
+    return {
+        "textDay":       today.get("textDay",       "?"),
+        "textNight":     today.get("textNight",     "?"),
+        "tempMax":       today.get("tempMax",       "?"),
+        "tempMin":       today.get("tempMin",       "?"),
+        "sunrise":       today.get("sunrise",       "?"),
+        "sunset":        today.get("sunset",        "?"),
+        "windDirDay":    today.get("windDirDay",    "?"),
+        "windScaleDay":  scale_text(today.get("windScaleDay","?")),
+        "precip":        today.get("precip",        "0"),
+        "humidity":      today.get("humidity",      "?"),
+        "pressure":      today.get("pressure",      "?"),
+        "vis":           today.get("vis",           "?"),
+        "uvIndex":       today.get("uvIndex",       "?"),
+    }
+
+
+# ── 3. 和风空气质量 ──────────────────────────────────
+def get_qweather_air(loc_id: str):
+    """和风 5 天空气质量"""
+    url = (
+        "https://devapi.qweather.com/v7/air/5d?"
+        + parse.urlencode({"location": loc_id, "key": QW_KEY})
+    )
+    try:
+        with request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+        if data.get("code") != "200":
+            return None
+        today = data["daily"][0]
+
+        aqi = int(today.get("aqi", "0"))
+        if aqi <= 50:
+            emoji = "😊 优"
+        elif aqi <= 100:
+            emoji = "🙂 良"
+        elif aqi <= 150:
+            emoji = "😐 轻度污染"
+        elif aqi <= 200:
+            emoji = "😷 中度污染"
+        elif aqi <= 300:
+            emoji = "🤢 重度污染"
         else:
-            message += f"📌 今日：{holiday}\n"
-        
-        message += f"\n🌤️ *天气信息*（{weather['city']}）\n"
-        message += f"  天气：{weather['description']}\n"
-        
-        if weather['source'] == '和风天气' and weather.get('feels_like') != 'N/A':
-            message += f"  温度：{weather['temp']}°C（体感 {weather['feels_like']}°C）\n"
-        else:
-            message += f"  温度：{weather['temp']}°C\n"
-        
-        message += f"  最高/最低：{weather['temp_max']}°C / {weather['temp_min']}°C\n"
-        message += f"  湿度：{weather['humidity']}%\n"
-        message += f"  气压：{weather['pressure']} hPa\n"
-        message += f"  风速：{weather['wind_speed']}"
-        
-        if 'wind_scale' in weather and weather['wind_scale'] != 'N/A':
-            message += f"m/s（{weather['wind_scale']}级 {weather['wind_dir']}）\n"
-        else:
-            message += "m/s\n"
-        
-        # 云量显示
-        clouds = weather.get('clouds', weather.get('cloud', 'N/A'))
-        message += f"  云量：{clouds}%\n"
-        
-        # 能见度显示
-        visibility = weather.get('vis', weather.get('visibility', 'N/A'))
-        message += f"  能见度：{visibility}米\n"
-        
-        message += f"  日出/日落：{weather['sunrise']} / {weather['sunset']}\n"
-        
-        # 空气质量
-        if 'aqi' in weather and isinstance(weather['aqi'], dict):
-            aqi = weather['aqi']
-            if aqi.get('value') != 'N/A' and aqi.get('value') != 0:
-                message += f"  🌫️ 空气质量：{aqi['value']} ({aqi['level']})\n"
-                if aqi.get('pm25') != 'N/A':
-                    message += f"    PM2.5：{aqi['pm25']} μg/m³\n"
-        
-        message += f"  数据源：{weather.get('source', '未知')}\n"
-        
-        # 生活指数
-        if 'indices' in weather:
-            indices = weather['indices']
-            message += f"\n📊 *生活指数*\n"
-            for idx_type, idx_data in indices.items():
-                if idx_type == '1':  # 舒适度
-                    message += f"  舒适度：{idx_data.get('category', 'N/A')} - {idx_data.get('text', '')}\n"
-                elif idx_type == '3':  # 穿衣
-                    message += f"  穿衣指数：{idx_data.get('category', 'N/A')} - {idx_data.get('text', '')}\n"
-                elif idx_type == '9':  # 紫外线
-                    message += f"  紫外线：{idx_data.get('category', 'N/A')} - {idx_data.get('text', '')}\n"
-        
-        message += f"\n💭 *今日一言*\n"
-        message += f"  {hitokoto}\n"
-        
-        message += f"\n⏰ 更新时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        message += f"自动推送 | GitHub Actions"
-        
-        return message
-    
-    def send_to_telegram(self, message: str) -> bool:
-        """发送消息到Telegram"""
-        url = f"https://api.telegram.org/bot{self.bot_token}/sendMessage"
-        
-        payload = {
-            'chat_id': self.chat_id,
-            'text': message,
-            'parse_mode': 'Markdown',
-            'disable_web_page_preview': True
+            emoji = "☠️ 严重污染"
+
+        return {
+            "aqi":       aqi,
+            "level":     today.get("level",     "?"),
+            "category":  today.get("category",  "?"),
+            "primary":   today.get("primary",   "无"),
+            "pm2p5":     today.get("pm2p5",     "?"),
+            "pm10":      today.get("pm10",      "?"),
+            "no2":       today.get("no2",       "?"),
+            "so2":       today.get("so2",       "?"),
+            "co":        today.get("co",        "?"),
+            "o3":        today.get("o3",        "?"),
+            "label":     f"{emoji}（AQI {aqi}·{today.get('category','')}）",
         }
-        
-        try:
-            response = requests.post(url, data=payload, timeout=15)
-            response.raise_for_status()
-            result = response.json()
-            
-            if result.get('ok'):
-                logger.info(f"消息已成功发送到Telegram")
-                return True
+    except Exception:
+        return None
+
+
+# ── 4. 节日 + 农历 ────────────────────────────────────
+def get_calendar_info():
+    try:
+        url = f"https://timor.tech/api/holiday/info/{DATE_STR}"
+        with request.urlopen(url, timeout=10) as resp:
+            data = json.loads(resp.read().decode())
+
+        holiday = None
+        if data.get("type", {}).get("type") is not None:
+            holiday = data.get("holiday", {}).get("name") or data.get("type", {}).get("name")
+
+        lunar_str = None
+        lunar = data.get("lunar", {})
+        if lunar:
+            lunar_name = lunar.get("lunarName", "")
+            if lunar_name:
+                lunar_str = lunar_name
             else:
-                logger.error(f"Telegram API错误: {result}")
-                return False
-                
-        except requests.exceptions.RequestException as e:
-            logger.error(f"发送到Telegram失败: {e}")
-            return False
-    
-    def run(self):
-        """主执行函数"""
-        logger.info(f"开始生成{self.city}的每日报告...")
-        
-        # 生成消息
-        message = self.generate_message()
-        logger.info(f"生成的消息长度: {len(message)}字符")
-        
-        # 发送到Telegram
-        success = self.send_to_telegram(message)
-        
-        if success:
-            logger.info("每日报告任务完成")
-            return 0
-        else:
-            logger.error("每日报告任务失败")
-            return 1
+                ly, lm, ld = lunar.get("lunarYear",""), lunar.get("lunarMonth",""), lunar.get("lunarDay","")
+                if ly and lm and ld:
+                    lunar_str = f"{ly}年{lm}月{ld}"
+        return holiday, lunar_str
+    except Exception:
+        return None, None
 
 
+# ── 5. 一言 ───────────────────────────────────────────
+def get_hitokoto():
+    try:
+        url = "https://v1.hitokoto.cn/?c=a&c=d&c=e&c=f&c=g&c=h&c=i&c=j&c=k&c=l&encode=json"
+        with request.urlopen(url, timeout=8) as resp:
+            data = json.loads(resp.read().decode())
+        s, src = data.get("hitokoto","").strip(), data.get("from","").strip()
+        return f"{s}\n　—— {src}" if src else s
+    except Exception:
+        return "（今日一言暂不可用）"
+
+
+# ── 6. 发送 Telegram ─────────────────────────────────
+def send_telegram(text: str):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "MarkdownV2", "disable_web_page_preview": True}
+    req = request.Request(url, data=parse.urlencode(payload).encode(),
+                          headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with request.urlopen(req, timeout=15) as resp:
+        return json.loads(resp.read().decode())
+
+def esc(s):
+    return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(s))
+
+
+# ────── 主流程 ────────────────────────────────────────
 def main():
-    """主函数，支持命令行参数"""
-    parser = argparse.ArgumentParser(description='发送每日信息到Telegram')
-    parser.add_argument('--city', '-c', type=str, help='城市名称')
-    parser.add_argument('--config', '-f', type=str, default='config.json', help='配置文件路径')
-    parser.add_argument('--test', '-t', action='store_true', help='测试模式，不实际发送')
-    
-    args = parser.parse_args()
-    
-    # 创建报告实例
-    report = DailyReport(config_file=args.config)
-    
-    # 如果命令行指定了城市，覆盖配置
-    if args.city:
-        report.city = args.city
-    
-    if args.test:
-        # 测试模式：只生成消息不发送
-        message = report.generate_message()
-        print("测试模式 - 生成的消息:")
-        print(message)
-        print("\n消息长度:", len(message))
-        print("\n农历库状态:", "可用" if LUNAR_AVAILABLE else "不可用")
-        return 0
-    
-    # 正常执行
-    return report.run()
+    print(f"📍 城市: {CITY}  |  📅 {DATE_STR} {WEEKDAY}")
+
+    # 1. 城市 ID
+    loc_id, city_name, lat, lon = city_lookup(CITY)
+    print(f"🌐 LocationID: {loc_id}  ({city_name})")
+
+    # 2. 天气
+    w = get_qweather(loc_id)
+    print(f"🌤 {w['textDay']}/{w['textNight']}  {w['tempMin']}~{w['tempMax']}°C")
+
+    # 3. 空气
+    air = get_qweather_air(loc_id)
+
+    # 4. 节日+农历
+    holiday, lunar_str = get_calendar_info()
+
+    # 5. 一言
+    hitokoto = get_hitokoto()
+
+    # ── 拼装消息 ──
+    L = []
+
+    # 头部
+    header = f"📆 *{esc(DATE_STR)}  {esc(WEEKDAY)}*"
+    if lunar_str:
+        header += f"\n📜 *农历*：{esc(lunar_str)}"
+    if holiday:
+        header += f"   🎉  *{esc(holiday)}*"
+    L.append(header)
+    L.append("━━━━━━━━━━━━━━━━")
+    L.append(f"📍 城市：*{esc(city_name)}*")
+
+    # ── 天气块 ──
+    L.append("")
+    L.append(f"☀️ 白天：{esc(w['textDay'])}　　　　　🌙 夜间：{esc(w['textNight'])}")
+    L.append(f"🌡 *温　　度*：{esc(w['tempMin'])}°C ～ {esc(w['tempMax'])}°C")
+    L.append(f"💧 *湿　　度*：{esc(w['humidity'])}%")
+    L.append(f"🌅 *日　　出*：{esc(w['sunrise'])}")
+    L.append(f"🌇 *日　　落*：{esc(w['sunset'])}")
+    L.append(f"💨 *风　　力*：{esc(w['windDirDay'])}  {esc(w['windScaleDay'])}")
+    L.append(f"🌧 *降水量*：{esc(w['precip'])} mm")
+    uv = w['uvIndex']
+    uv_label = "弱" if uv <= 2 else "中等" if uv <= 5 else "强" if uv <= 7 else "极强"
+    L.append(f"☀️ *紫外线*：{esc(uv)}（{uv_label}）")
+    L.append(f"🔵 *气　　压*：{esc(w['pressure'])} hPa")
+    L.append(f"👁 *能　见度*：{esc(w['vis'])} km")
+
+    # ── 空气块 ──
+    if air:
+        L.append("")
+        L.append("━━━━━━━━━━━━━━━━")
+        L.append(f"🌬️ **空气质量**：{esc(air['label'])}")
+        L.append(f"  首要污染物：{esc(air['primary'])}")
+        L.append(f"　　• PM₂ ₅ ：{esc(air['pm2p5'])} µg/m³")
+        L.append(f"　　• PM₁₀ ：{esc(air['pm10'])} µg/m³")
+        L.append(f"　　• SO₂     ：{esc(air['so2'])} µg/m³")
+        L.append(f"　　• NO₂    ：{esc(air['no2'])} µg/m³")
+        L.append(f"　　• O₃       ：{esc(air['o3'])} µg/m³")
+        L.append(f"　　• CO      ：{esc(air['co'])} µg/m³")
+
+    # ── 一言 ──
+    L.append("")
+    L.append("━━━━━━━━━━━━━━━━━━")
+    L.append(f"📖 *今日一言*")
+    L.append(esc(hitokoto))
+
+    L.append("")
+    L.append(f"_{esc('自动推送 · GitHub Actions ·')} {esc(DATE_STR)}_")
+
+    message = "\n".join(L)
+    print("\n═══ 最终消息 ═══")
+    print(message)
+    print("═══ ═══ ═══\n")
+
+    send_telegram(message)
+    print("✅ 已推送到 Telegram！")
 
 
-if __name__ == '__main__':
-    sys.exit(main())
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception as e:
+        msg = f"⚠️ 推送失败：{esc(str(e))}\n```\n{esc(traceback.format_exc())}\n```"
+        print(msg)
+        try:
+            send_telegram(msg)
+        except Exception:
+            pass
+        sys.exit(1)
