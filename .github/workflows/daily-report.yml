@@ -1,25 +1,73 @@
 name: 每日速报推送
+
 on:
   schedule:
     # 北京时间每天早上 6:00（UTC 22:00）
     - cron: '0 22 * * *'
   workflow_dispatch:
+
 jobs:
   report:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
       - name: Install Dependencies
         run: pip install -r requirements.txt
-      - name: Run Report
+
+      - name: Run Report (第1次尝试)
+        id: report1
+        continue-on-error: true
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           CUSTOM_CITY: ${{ secrets.CUSTOM_CITY }}
           QWEATHER_API_KEY: ${{ secrets.QWEATHER_API_KEY }}
         run: python scripts/daily_report.py
+
+      - name: 等待重试 (第2次尝试)
+        if: steps.report1.outcome == 'failure'
+        run: sleep 60
+
+      - name: Run Report (第2次尝试)
+        id: report2
+        continue-on-error: true
+        if: steps.report1.outcome == 'failure'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CUSTOM_CITY: ${{ secrets.CUSTOM_CITY }}
+          QWEATHER_API_KEY: ${{ secrets.QWEATHER_API_KEY }}
+        run: python scripts/daily_report.py
+
+      - name: 等待重试 (第3次尝试)
+        if: steps.report2.outcome == 'failure'
+        run: sleep 120
+
+      - name: Run Report (第3次尝试)
+        id: report3
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          CUSTOM_CITY: ${{ secrets.CUSTOM_CITY }}
+          QWEATHER_API_KEY: ${{ secrets.QWEATHER_API_KEY }}
+        if: steps.report2.outcome == 'failure'
+        run: python scripts/daily_report.py
+
+      - name: 通知失败
+        if: failure()
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=$(printf '⚠️ *每日速报运行失败*\n\n📅 %s\n🏙 城市: %s\n\n请在 GitHub Actions 日志中查看详情。' "$(date +%Y-%m-%d)" "${{ secrets.CUSTOM_CITY || '常德' }}")" \
+            -H "Content-Type: application/json"
