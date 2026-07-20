@@ -1,14 +1,45 @@
 #!/usr/bin/env python3
 """每日速报 —— 和风天气 / 节日 / 农历 / 一言 → Telegram"""
 import os, json, sys, re, traceback, gzip, io
+import smtplib
+from email.mime.text import MIMEText
 from datetime import datetime, timezone, timedelta
 from urllib import request, parse
+import hmac, hashlib, base64, time
 
 # ── 配置 ──────────────────────────────────────────────
 CITY       = os.environ.get("CUSTOM_CITY") or "常德"         # 空串兜底
-BOT_TOKEN  = os.environ["TELEGRAM_BOT_TOKEN"]
-CHAT_ID    = os.environ["TELEGRAM_CHAT_ID"]
 QW_KEY     = os.environ.get("QWEATHER_API_KEY") or ""     # 和风天气 Key（必须）
+
+# Telegram（可选）
+TG_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN") or ""
+TG_CHAT_ID   = os.environ.get("TELEGRAM_CHAT_ID") or ""
+
+# Bark（可选，iOS 推送）
+BARK_KEY = os.environ.get("BARK_KEY") or ""
+
+# Server 酱（可选，微信推送）
+SC_KEY = os.environ.get("SERVER_CHAN_KEY") or ""
+
+# 企业微信机器人（可选）
+WX_WORK_WEBHOOK = os.environ.get("WX_WORK_WEBHOOK") or ""
+
+# 钉钉机器人（可选）
+DD_WEBHOOK = os.environ.get("DD_WEBHOOK") or ""
+DD_SECRET = os.environ.get("DD_SECRET") or ""
+
+# 飞书机器人（可选）
+FS_WEBHOOK = os.environ.get("FS_WEBHOOK") or ""
+
+# PushDeer（可选，自部署推送服务）
+PUSHDEER_KEY = os.environ.get("PUSHDEER_KEY") or ""
+
+# 邮件推送（可选）
+SMTP_USER = os.environ.get("SMTP_USER") or ""
+SMTP_PASS = os.environ.get("SMTP_PASS") or ""
+SMTP_TO = os.environ.get("SMTP_TO") or ""
+SMTP_HOST = os.environ.get("SMTP_HOST") or "smtp.qq.com"
+SMTP_PORT = int(os.environ.get("SMTP_PORT") or "465")
 
 CST        = timezone(timedelta(hours=8))
 TODAY      = datetime.now(CST)
@@ -307,14 +338,251 @@ def get_hitokoto():
     return "「✨ 新的一天，愿你心怀暖阳。」\n　—— 每日速报"
 
 
-# ── 6. 发送 Telegram ─────────────────────────────────
+# ── 6. 多通道推送 ─────────────────────────────────
+
 def send_telegram(text: str):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text, "parse_mode": "MarkdownV2", "disable_web_page_preview": True}
+    """Telegram 推送（MarkdownV2）"""
+    if not TG_BOT_TOKEN or not TG_CHAT_ID:
+        return
+    url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": TG_CHAT_ID, "text": text, "parse_mode": "MarkdownV2", "disable_web_page_preview": True}
     req = request.Request(url, data=parse.urlencode(payload).encode(),
                           headers={"Content-Type": "application/x-www-form-urlencoded"})
     with request.urlopen(req, timeout=15) as resp:
         return json.loads(resp.read().decode())
+
+
+def send_bark(text: str, subtitle: str = "每日速报"):
+    """Bark iOS 推送"""
+    if not BARK_KEY:
+        return
+    url = f"https://api.day.app/{BARK_KEY}/{parse.quote(subtitle)}/{parse.quote(text)}"
+    try:
+        req = request.Request(url)
+        with request.urlopen(req, timeout=10) as resp:
+            print(f"  Bark: {resp.read().decode()}")
+    except Exception as e:
+        print(f"  Bark 失败: {e}")
+
+
+def send_server_chan(text: str, desp: str = ""):
+    """Server 酱微信推送"""
+    if not SC_KEY:
+        return
+    if not desp:
+        # 自动截取前80字作为描述
+        desp = text[:80].replace("\n", " ")
+    url = f"https://sctapi.ftqq.com/{SC_KEY}.send"
+    payload = {"title": "每日速报", "content": f"{desp}\n\n{text}"}
+    req = request.Request(url, data=parse.urlencode(payload).encode(),
+                          headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with request.urlopen(req, timeout=10) as resp:
+        print(f"  Server酱: {resp.read().decode()}")
+
+
+# ── 企业微信机器人 ──
+def send_wx_work(text: str):
+    """企业微信群机器人推送"""
+    if not WX_WORK_WEBHOOK:
+        return
+    url = WX_WORK_WEBHOOK
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "content": text[:2048]  # 企微限制2048字符
+        }
+    }
+    req = request.Request(url, data=json.dumps(payload).encode(),
+                          headers={"Content-Type": "application/json"})
+    with request.urlopen(req, timeout=10) as resp:
+        print(f"  企业微信: {resp.read().decode()}")
+
+
+# ── 钉钉机器人 ──
+def dd_sign(secret):
+    """钉钉签名"""
+    timestamp = str(round(time.time() * 1000))
+    string_to_sign = f'{timestamp}\n{secret}'
+    hmac_code = hmac.new(string_to_sign.encode('utf-8'), digestmod=hashlib.sha256).digest()
+    sign = parse.quote_plus(base64.b64encode(hmac_code))
+    return timestamp, sign
+
+
+def send_dingtalk(text: str):
+    """钉钉群机器人推送（加签模式）"""
+    if not DD_WEBHOOK:
+        return
+    url = DD_WEBHOOK
+    if DD_SECRET:
+        timestamp, sign = dd_sign(DD_SECRET)
+        if '?' in url:
+            url += f"&timestamp={timestamp}&sign={sign}"
+        else:
+            url += f"?timestamp={timestamp}&sign={sign}"
+    
+    payload = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": "每日速报",
+            "text": text
+        }
+    }
+    req = request.Request(url, data=json.dumps(payload).encode(),
+                          headers={"Content-Type": "application/json"})
+    with request.urlopen(req, timeout=10) as resp:
+        print(f"  钉钉: {resp.read().decode()}")
+
+
+# ── 飞书机器人 ──
+def send_feishu(text: str):
+    """飞书群机器人推送"""
+    if not FS_WEBHOOK:
+        return
+    url = FS_WEBHOOK
+    # 截取适当长度
+    display_text = text[:4096]
+    payload = {
+        "msg_type": "interactive",
+        "card": {
+            "header": {
+                "title": {"tag": "plain_text", "content": "每日速报"},
+                "template": "blue"
+            },
+            "elements": [{
+                "tag": "markdown",
+                "content": display_text
+            }]
+        }
+    }
+    req = request.Request(url, data=json.dumps(payload).encode(),
+                          headers={"Content-Type": "application/json"})
+    with request.urlopen(req, timeout=10) as resp:
+        print(f"  飞书: {resp.read().decode()}")
+
+
+# ── PushDeer ──
+def send_pushdeer(text: str):
+    """PushDeer 推送（自部署）"""
+    if not PUSHDEER_KEY:
+        return
+    url = f"https://api2.pushdeer.com/message/push"
+    payload = {
+        "pushkey": PUSHDEER_KEY,
+        "text": text[:2000],
+        "type": "markdown"
+    }
+    req = request.Request(url, data=parse.urlencode(payload).encode(),
+                          headers={"Content-Type": "application/x-www-form-urlencoded"})
+    with request.urlopen(req, timeout=10) as resp:
+        print(f"  PushDeer: {resp.read().decode()}")
+
+
+# ── 邮件推送 ──
+def send_email(text: str):
+    """SMTP 邮件推送"""
+    if not SMTP_USER or not SMTP_PASS or not SMTP_TO:
+        return
+    
+    msg = MIMEText(text, 'plain', 'utf-8')
+    msg['From'] = SMTP_USER
+    msg['To'] = SMTP_TO
+    msg['Subject'] = f"每日速报 · {DATE_STR}"
+    
+    try:
+        if SMTP_PORT == 465:
+            server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10)
+        else:
+            server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=10)
+            if SMTP_PORT == 587:
+                server.starttls()
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_USER, SMTP_TO, msg.as_string())
+        server.quit()
+        print("  邮件: 发送成功")
+    except Exception as e:
+        print(f"  邮件: 发送失败 - {e}")
+
+
+def push_all(message: str):
+    """分发到所有已配置的通道"""
+    channels = []
+    if TG_BOT_TOKEN and TG_CHAT_ID:
+        channels.append("Telegram")
+    if BARK_KEY:
+        channels.append("Bark")
+    if SC_KEY:
+        channels.append("Server酱")
+    if WX_WORK_WEBHOOK:
+        channels.append("企业微信")
+    if DD_WEBHOOK:
+        channels.append("钉钉")
+    if FS_WEBHOOK:
+        channels.append("飞书")
+    if PUSHDEER_KEY:
+        channels.append("PushDeer")
+    if SMTP_USER and SMTP_PASS and SMTP_TO:
+        channels.append("邮件")
+    
+    if not channels:
+        print("  ⚠️ 未配置任何推送通道")
+        return
+    
+    print(f"  📤 推送到: {', '.join(channels)}")
+    
+    if TG_BOT_TOKEN and TG_CHAT_ID:
+        try:
+            send_telegram(message)
+            print("  ✅ Telegram 成功")
+        except Exception as e:
+            print(f"  ❌ Telegram 失败: {e}")
+    
+    if BARK_KEY:
+        try:
+            send_bark(message)
+            print("  ✅ Bark 成功")
+        except Exception as e:
+            print(f"  ❌ Bark 失败: {e}")
+    
+    if SC_KEY:
+        try:
+            send_server_chan(message)
+            print("  ✅ Server酱 成功")
+        except Exception as e:
+            print(f"  ❌ Server酱 失败: {e}")
+    
+    if WX_WORK_WEBHOOK:
+        try:
+            send_wx_work(message)
+            print("  ✅ 企业微信 成功")
+        except Exception as e:
+            print(f"  ❌ 企业微信 失败: {e}")
+    
+    if DD_WEBHOOK:
+        try:
+            send_dingtalk(message)
+            print("  ✅ 钉钉 成功")
+        except Exception as e:
+            print(f"  ❌ 钉钉 失败: {e}")
+    
+    if FS_WEBHOOK:
+        try:
+            send_feishu(message)
+            print("  ✅ 飞书 成功")
+        except Exception as e:
+            print(f"  ❌ 飞书 失败: {e}")
+    
+    if PUSHDEER_KEY:
+        try:
+            send_pushdeer(message)
+            print("  ✅ PushDeer 成功")
+        except Exception as e:
+            print(f"  ❌ PushDeer 失败: {e}")
+    
+    if SMTP_USER and SMTP_PASS and SMTP_TO:
+        try:
+            send_email(message)
+        except Exception as e:
+            print(f"  ❌ 邮件 失败: {e}")
 
 def esc(s):
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(s))
@@ -405,8 +673,8 @@ def main():
     print(message)
     print("═══ ═══ ═══\n")
 
-    send_telegram(message)
-    print("✅ 已推送到 Telegram！")
+    push_all(message)
+    print("✅ 推送完成！")
 
 
 if __name__ == "__main__":

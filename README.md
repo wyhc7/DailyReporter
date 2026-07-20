@@ -1,6 +1,6 @@
-# 📆 每日速报 → Telegram
+# 📆 每日速报 → 多通道推送
 
-> 和风天气 + 农历 + 一言，GitHub Actions 每日自动推送。
+> 和风天气 + 农历 + 一言，GitHub Actions 每日自动推送至 Telegram / Bark / 微信。
 
 ---
 
@@ -31,28 +31,76 @@
 3. 免费版每天 **1000 次调用**（本脚本每次跑用 3 次，绰绰有余）
 4. 复制你的 **API Key**
 
-### 第 2 步：创建 Telegram Bot
+### 第 2 步：选择推送渠道
+
+#### 渠道 A：Telegram（推荐）
 
 1. Telegram 搜索 `@BotFather`
 2. 发送 `/newbot`，按提示命名，记下 **Token**
+3. 私聊搜索 `@userinfobot`，发任意消息即可获得 **Chat ID**
 
-### 第 3 步：获取 Chat ID
+#### 渠道 B：Bark（iOS 推送）
 
-- 私聊：搜索 `@userinfobot`，发任意消息即可获得 ID
-- 群组：把 bot 拉进群，给管理员权限，发 `/my_id @你的bot用户名`
+1. 在 App Store 下载 **Bark**
+2. 打开 App，复制你的 **Server 密钥**（格式：一串字母数字）
 
-### 第 4 步：Fork 仓库 → 设置 4 个 Secrets
+#### 渠道 C：Server 酱（微信推送）
+
+1. 打开 [sct.ftqq.com](https://sct.ftqq.com/)
+2. 登录 → 获取 **SendKey**
+
+#### 渠道 D：企业微信机器人
+
+1. 打开企业微信群 → 群设置 → 群机器人 → 添加机器人
+2. 复制 **Webhook 地址**
+
+#### 渠道 E：钉钉机器人
+
+1. 打开钉钉群 → 群设置 → 智能群助手 → 添加机器人
+2. 选择 **自定义（通过 Webhook 接入自定义服务）**
+3. 建议开启 **加签** 模式，复制 Webhook 地址和 Secret
+
+#### 渠道 F：飞书机器人
+
+1. 打开飞书群 → 群设置 → 群机器人 → 添加机器人
+2. 自定义机器人名称，复制 **Webhook 地址**
+
+#### 渠道 G：PushDeer（自部署推送）
+
+1. 自建 PushDeer 服务或部署到服务器
+2. 在 App 中获取 **PushKey**
+
+#### 渠道 H：邮件推送
+
+1. 开启邮箱 SMTP 服务（QQ/163/ Gmail 等）
+2. 记录：邮箱地址、授权码/密码、SMTP 服务器地址和端口
+
+> 💡 可以只配一个，也可以同时配多个，脚本会自动检测已配置的通道并全部推送。
+
+### 第 3 步：Fork 仓库 → 设置 Secrets
 
 在仓库 **Settings → Secrets and variables → Actions** 添加：
 
-| Secret 名 | 说明 |
-|---|---|
-| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token |
-| `TELEGRAM_CHAT_ID` | 你的 Chat ID |
-| `CUSTOM_CITY` | 城市名，默认 `常德`；可填 `长沙`、`北京`、`上海` 等 |
-| `QWEATHER_API_KEY` | 和风天气 API Key（**必需**） |
+| Secret 名 | 说明 | 必需 |
+|---|---|---|
+| `QWEATHER_API_KEY` | 和风天气 API Key | ✅ 必须 |
+| `CUSTOM_CITY` | 城市名，默认 `常德` | ⭕ 可选 |
+| `TELEGRAM_BOT_TOKEN` | Telegram Bot Token | 配 TG 则必填 |
+| `TELEGRAM_CHAT_ID` | 你的 Chat ID | 配 TG 则必填 |
+| `BARK_KEY` | Bark Server 密钥 | 配 Bark 则必填 |
+| `SERVER_CHAN_KEY` | Server 酱 SendKey | 配微信则必填 |
+| `WX_WORK_WEBHOOK` | 企业微信机器人 Webhook | 配企微则必填 |
+| `DD_WEBHOOK` | 钉钉机器人 Webhook | 配钉钉则必填 |
+| `DD_SECRET` | 钉钉加签密钥 | 钉钉开启加签则必填 |
+| `FS_WEBHOOK` | 飞书机器人 Webhook | 配飞书则必填 |
+| `PUSHDEER_KEY` | PushDeer PushKey | 配 PushDeer 则必填 |
+| `SMTP_USER` | 发件人邮箱 | 配邮件则必填 |
+| `SMTP_PASS` | 邮箱授权码/密码 | 配邮件则必填 |
+| `SMTP_TO` | 收件人邮箱 | 配邮件则必填 |
+| `SMTP_HOST` | SMTP 服务器（默认 smtp.qq.com） | 配邮件可选 |
+| `SMTP_PORT` | SMTP 端口（默认 465） | 配邮件可选 |
 
-### 第 5 步：手动触发测试
+### 第 4 步：手动触发测试
 
 进入 Actions 标签 → 选中 `每日速报推送` → **Run workflow**。
 
