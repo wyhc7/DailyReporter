@@ -364,15 +364,21 @@ def main():
     d_e = wx_emoji.get(w['textDay'], "🌡")
     n_e = wx_emoji.get(w['textNight'], "🌡")
 
-    L.append(f"{d_e}  *白天*  {esc(w['textDay'])}　　　　{n_e}  *夜间*  {esc(w['textNight'])}")
+    L.append(f"{d_e}  *白天*  {esc(w['textDay'])}")
+    L.append(f"{n_e}  *夜间*  {esc(w['textNight'])}")
     L.append(f"🌡  *{esc(w['tempMin'])} ～ {esc(w['tempMax'])} °C*")
-    L.append(f"💧  {esc(w['humidity'])}%　　　☔  {esc(w['precip'])} mm　　　🍃  {esc(w['windDirDay'])}  {esc(w['windScaleDay'])}")
-    L.append(f"🌅  {esc(w['sunrise'])}　　　　🌇  {esc(w['sunset'])}")
+    L.append(f"💧  {esc(w['humidity'])}%")
+    L.append(f"☔  {esc(w['precip'])} mm")
+    L.append(f"🍃  {esc(w['windDirDay'])}  {esc(w['windScaleDay'])}")
+    L.append(f"🌅  {esc(w['sunrise'])}")
+    L.append(f"🌇  {esc(w['sunset'])}")
     uv = w['uvIndex']
     try: uv_num = int(uv)
     except: uv_num = 0
     uv_label = "弱" if uv_num<=2 else "中等" if uv_num<=5 else "强" if uv_num<=7 else "极强"
-    L.append(f"☀️  紫外线 {esc(uv)}（{uv_label}）　　　🔵  气压 {esc(w['pressure'])} hPa　　　👁  能见度 {esc(w['vis'])} km")
+    L.append(f"☀️  紫外线 {esc(uv)}（{uv_label}）")
+    L.append(f"🔵  气压 {esc(w['pressure'])} hPa")
+    L.append(f"👁  能见度 {esc(w['vis'])} km")
     L.append("")
 
     # ── 空气 ──
@@ -381,7 +387,12 @@ def main():
         primary = air['primary']
         if primary and primary not in ("NA","N/A","无","?"):
             L.append(f"首要污染物：{esc(primary)}")
-        L.append(f"PM₂ ₅ {esc(air['pm2p5'])}　　PM₁₀ {esc(air['pm10'])}　　NO₂ {esc(air['no2'])}　　SO₂ {esc(air['so2'])}　　O₃ {esc(air['o3'])}　　CO {esc(air['co'])}")
+        L.append(f"PM₂ ₅  {esc(air['pm2p5'])}")
+        L.append(f"PM₁₀  {esc(air['pm10'])}")
+        L.append(f"NO₂  {esc(air['no2'])}")
+        L.append(f"SO₂  {esc(air['so2'])}")
+        L.append(f"O₃  {esc(air['o3'])}")
+        L.append(f"CO  {esc(air['co'])}")
         L.append("")
 
     # ── 一言 ──
