@@ -120,6 +120,15 @@
 
 如需修改，编辑 `.github/workflows/daily-report.yml` 中的 `cron` 表达式。
 
+## 🔄 仓库保活机制
+
+GitHub Actions 的 scheduled workflows 如果仓库连续 **60 天无 git 提交**，会被自动停用。
+
+本项目通过 `.github/workflows/keepalive.yml` 实现自动保活：
+- **每月 1 号自动提交**时间戳到 `.keepalive` 文件
+- 重置 60 天倒计时，确保每日推送永不中断
+- 也可手动触发 `Actions → 保活触跳 → Run workflow` 刷新
+
 ---
 
 ## 📡 API 依赖
