@@ -693,7 +693,6 @@ def main():
         L.append(lunar_line.ljust(W))
     elif holiday:
         L.append(center_row("🎉", holiday))
-    L.append("─" * W)
 
     # 城市
     L.append(kv("📍 城市", city_name))
@@ -734,7 +733,6 @@ def main():
     L.append(kv("☀️ 紫外线", f"{uv}（{uv_label}）"))
     L.append(kv("🔵 气压", f"{w['pressure']} hPa"))
     L.append(kv("👁 能见度", f"{w['vis']} km"))
-    L.append("─" * W)
 
     # ── 空气 ──
     if air:
@@ -752,7 +750,6 @@ def main():
         ]
         for name, val in pollutants:
             L.append(kv(f"  • {name}", val, label_width=12))
-        L.append("─" * W)
 
     # ── 一言 ──
     L.append(center_row("📖", "今 日 一 言"))
@@ -764,7 +761,6 @@ def main():
     for row in wrapped:
         L.append(row)
     L.append("")
-    L.append("─" * W)
 
     message = "\n".join(L)
     print("\n═══ 最终消息 ═══")
