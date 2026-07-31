@@ -674,12 +674,28 @@ def main():
         s = s[:W]
         return "║" + s.ljust(W) + "║"
 
-    def fill(label, value, space="  "):
-        return line(label + space + str(value))
+    def display_width(s):
+        width = 0
+        for c in str(s):
+            cp = ord(c)
+            if (0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF or
+                0xF900 <= cp <= 0xFAFF or 0x20000 <= cp <= 0x2FA1F):
+                width += 2
+            elif cp > 0x1F000 or cp in (0x2000, 0x2001, 0x2002, 0x2003,
+                0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A):
+                width += 1
+            else:
+                width += 1
+        return width
+
+    def kv(label, value, label_width=13):
+        dw = display_width(label)
+        pad = max(0, label_width - dw)
+        return line(label + " " * pad + "｜ " + str(value))
 
     def center_row(icon, text):
-        icon_len = len(icon)
-        text_len = len(text)
+        icon_len = display_width(icon)
+        text_len = display_width(text)
         pad = max(0, W - icon_len - text_len)
         l = pad // 2
         r = pad - l
@@ -699,7 +715,7 @@ def main():
     L.append(mid())
 
     # 城市
-    L.append(fill("📍", city_name))
+    L.append(kv("📍 城市", city_name))
     L.append(sep())
 
     # ── 天气 ──
@@ -719,32 +735,33 @@ def main():
     }
     d_e = wx_emoji_day.get(w['textDay'], "🌡")
     n_e = wx_emoji_night.get(w['textNight'], "🌙")
-    L.append(fill(f"{d_e} 白天：", w['textDay'], space=""))
-    L.append(fill(f"{n_e} 夜间：", w['textNight'], space=""))
-    L.append(fill("🌡 温度：", f"{w['tempMin']}°C ～ {w['tempMax']}°C"))
-    L.append(fill("💧 湿度：", f"{w['humidity']}%"))
-    L.append(fill("🌅 日出：", w['sunrise']))
-    L.append(fill("🌇 日落：", w['sunset']))
-    L.append(fill("💨 风力：", f"{w['windDirDay']}  {w['windScaleDay']}"))
-    L.append(fill("🌧 降水量：", f"{w['precip']} mm"))
+
+    L.append(kv(f"{d_e} 白天", w['textDay']))
+    L.append(kv(f"{n_e} 夜间", w['textNight']))
+    L.append(kv("🌡 温度", f"{w['tempMin']}°C ～ {w['tempMax']}°C"))
+    L.append(kv("💧 湿度", f"{w['humidity']}%"))
+    L.append(kv("🌅 日出", w['sunrise']))
+    L.append(kv("🌇 日落", w['sunset']))
+    L.append(kv("💨 风力", f"{w['windDirDay']}  {w['windScaleDay']}"))
+    L.append(kv("🌧 降水量", f"{w['precip']} mm"))
     uv = w['uvIndex']
     try:
         uv_num = int(uv)
     except Exception:
         uv_num = 0
     uv_label = "弱" if uv_num <= 2 else "中等" if uv_num <= 5 else "强" if uv_num <= 7 else "极强"
-    L.append(fill("☀️ 紫外线：", f"{uv}（{uv_label}）"))
-    L.append(fill("🔵 气压：", f"{w['pressure']} hPa"))
-    L.append(fill("👁 能见度：", f"{w['vis']} km"))
+    L.append(kv("☀️ 紫外线", f"{uv}（{uv_label}）"))
+    L.append(kv("🔵 气压", f"{w['pressure']} hPa"))
+    L.append(kv("👁 能见度", f"{w['vis']} km"))
     L.append(sep())
 
     # ── 空气 ──
     if air:
         L.append(mid())
-        L.append(fill("🌬️ 空气质量：", air['label']))
+        L.append(kv("🌬️ 空气质量", air['label']))
         primary = air['primary']
         if primary and primary not in ("NA", "N/A", "无", "?"):
-            L.append(line(f"  ⚠️ 首要污染物：{primary}"))
+            L.append(kv("⚠️ 首要污染物", primary, label_width=15))
         pollutants = [
             ("PM₂.₅", air['pm2p5']),
             ("PM₁₀", air['pm10']),
@@ -754,12 +771,12 @@ def main():
             ("CO", air['co']),
         ]
         for name, val in pollutants:
-            L.append(fill(f"  • {name}：", val))
+            L.append(kv(f"  • {name}", val, label_width=15))
         L.append(sep())
 
     # ── 一言 ──
     L.append(mid())
-    L.append(line("📖 今 日 一 言"))
+    L.append(center_row("📖", "今 日 一 言"))
     L.append(sep())
     quote = hitokoto if hitokoto else "暂无"
     wrapped = []
