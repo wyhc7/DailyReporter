@@ -663,45 +663,26 @@ def main():
     holiday, lunar_str = get_calendar_info()
     hitokoto = get_hitokoto()
 
-    # ── 消息拼装（卡片式排版） ──
+    # ── 消息拼装（简洁卡片排版） ──
     W = 32
 
-    def top():    return "╔" + "═" * W + "╗"
-    def mid():    return "╠" + "═" * W + "╣"
-    def bot():    return "╚" + "═" * W + "╝"
-    def sep():    return "║" + " " * W + "║"
     def line(s=""):
         s = s[:W]
-        return "║" + s.ljust(W) + "║"
-
-    def display_width(s):
-        width = 0
-        for c in str(s):
-            cp = ord(c)
-            if (0x4E00 <= cp <= 0x9FFF or 0x3400 <= cp <= 0x4DBF or
-                0xF900 <= cp <= 0xFAFF or 0x20000 <= cp <= 0x2FA1F):
-                width += 2
-            elif cp > 0x1F000 or cp in (0x2000, 0x2001, 0x2002, 0x2003,
-                0x2004, 0x2005, 0x2006, 0x2007, 0x2008, 0x2009, 0x200A):
-                width += 1
-            else:
-                width += 1
-        return width
-
-    def kv(label, value, label_width=13):
-        dw = display_width(label)
-        pad = max(0, label_width - dw)
-        return line(label + " " * pad + "｜ " + str(value))
+        return s.ljust(W)
 
     def center_row(icon, text):
-        icon_len = display_width(icon)
-        text_len = display_width(text)
+        icon_len = len(icon)
+        text_len = len(text)
         pad = max(0, W - icon_len - text_len)
         l = pad // 2
         r = pad - l
-        return line(icon + " " * l + text + " " * r)
+        return (icon + " " * l + text + " " * r).ljust(W)
 
-    L = [top()]
+    def kv(label, value, label_width=12):
+        pad = max(0, label_width - len(label))
+        return (label + " " * pad + "｜ " + str(value)).ljust(W)
+
+    L = []
 
     # 头栏
     L.append(center_row("📆", f"{DATE_STR}  {WEEKDAY}"))
@@ -709,14 +690,14 @@ def main():
         lunar_line = f"📜 农历：{lunar_str}"
         if holiday:
             lunar_line += f"   🎉 {holiday}"
-        L.append(line(lunar_line))
+        L.append(lunar_line.ljust(W))
     elif holiday:
-        L.append(line(f"🎉 {holiday}"))
-    L.append(mid())
+        L.append(center_row("🎉", holiday))
+    L.append("─" * W)
 
     # 城市
     L.append(kv("📍 城市", city_name))
-    L.append(sep())
+    L.append("")
 
     # ── 天气 ──
     wx_emoji_day = {
@@ -753,15 +734,14 @@ def main():
     L.append(kv("☀️ 紫外线", f"{uv}（{uv_label}）"))
     L.append(kv("🔵 气压", f"{w['pressure']} hPa"))
     L.append(kv("👁 能见度", f"{w['vis']} km"))
-    L.append(sep())
+    L.append("─" * W)
 
     # ── 空气 ──
     if air:
-        L.append(mid())
         L.append(kv("🌬️ 空气质量", air['label']))
         primary = air['primary']
         if primary and primary not in ("NA", "N/A", "无", "?"):
-            L.append(kv("⚠️ 首要污染物", primary, label_width=15))
+            L.append(kv("⚠️ 首要污染物", primary, label_width=14))
         pollutants = [
             ("PM₂.₅", air['pm2p5']),
             ("PM₁₀", air['pm10']),
@@ -771,21 +751,20 @@ def main():
             ("CO", air['co']),
         ]
         for name, val in pollutants:
-            L.append(kv(f"  • {name}", val, label_width=15))
-        L.append(sep())
+            L.append(kv(f"  • {name}", val, label_width=12))
+        L.append("─" * W)
 
     # ── 一言 ──
-    L.append(mid())
     L.append(center_row("📖", "今 日 一 言"))
-    L.append(sep())
+    L.append("")
     quote = hitokoto if hitokoto else "暂无"
     wrapped = []
-    for i in range(0, len(quote), W - 2):
-        wrapped.append(quote[i:i + W - 2])
+    for i in range(0, len(quote), W):
+        wrapped.append(quote[i:i + W])
     for row in wrapped:
-        L.append(line(f"「{row}」"))
-    L.append(sep())
-    L.append(bot())
+        L.append(row)
+    L.append("")
+    L.append("─" * W)
 
     message = "\n".join(L)
     print("\n═══ 最终消息 ═══")
