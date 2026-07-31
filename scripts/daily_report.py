@@ -749,7 +749,7 @@ def main():
             ("CO", air['co']),
         ]
         for name, val in pollutants:
-            L.append(kv(f"  • {name}", val, label_width=12))
+            L.append(kv(f"    • {name}", val, label_width=14))
 
     # ── 一言 ──
     L.append(center_row("📖", "今 日 一 言"))
