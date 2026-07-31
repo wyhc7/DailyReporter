@@ -663,82 +663,98 @@ def main():
     holiday, lunar_str = get_calendar_info()
     hitokoto = get_hitokoto()
 
-    # ── 消息拼装（纯文本排版） ──
-    L = []
+    # ── 消息拼装（卡片式排版） ──
+    W = 32
+
+    def top():    return "╔" + "═" * W + "╗"
+    def mid():    return "╠" + "═" * W + "╣"
+    def bot():    return "╚" + "═" * W + "╝"
+    def sep():    return "║" + " " * W + "║"
+    def line(s=""):
+        s = s[:W]
+        return "║" + s.ljust(W) + "║"
+
+    def fill(label, value, space="  "):
+        return line(label + space + str(value))
+
+    def center_row(icon, text):
+        icon_len = len(icon)
+        text_len = len(text)
+        pad = max(0, W - icon_len - text_len)
+        l = pad // 2
+        r = pad - l
+        return line(icon + " " * l + text + " " * r)
+
+    L = [top()]
 
     # 头栏
-    L.append(f"📆 {DATE_STR}  {WEEKDAY}")
+    L.append(center_row("📆", f"{DATE_STR}  {WEEKDAY}"))
     if lunar_str:
         lunar_line = f"📜 农历：{lunar_str}"
         if holiday:
             lunar_line += f"   🎉 {holiday}"
-        L.append(lunar_line)
+        L.append(line(lunar_line))
     elif holiday:
-        L.append(f"🎉 {holiday}")
-    L.append("─" * 28)
-    L.append("")
-    L.append(f"📍 城市：{city_name}")
-    L.append("")
+        L.append(line(f"🎉 {holiday}"))
+    L.append(mid())
+
+    # 城市
+    L.append(fill("📍", city_name))
+    L.append(sep())
 
     # ── 天气 ──
-    wx_emoji_day = {
-        "晴":"☀️","少云":"🌤","晴间多云":"🌤","多云":"⛅","阴":"☁️",
-        "霾":"🌫","扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫",
-        "雨":"🌧","小雨":"🌦","中雨":"🌧","大雨":"🌧","暴雨":"🌧",
-        "雷阵雨":"⛈","雪":"❄️","小雪":"🌨","中雪":"❄️","大雪":"❄️",
-        "暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
-    }
-    wx_emoji_night = {
-        "晴":"🌙","少云":"🌤","晴间多云":"🌤","多云":"☁️","阴":"☁️",
-        "霾":"🌫","扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫",
-        "雨":"🌧","小雨":"🌦","中雨":"🌧","大雨":"🌧","暴雨":"🌧",
-        "雷阵雨":"⛈","雪":"❄️","小雪":"🌨","中雪":"❄️","大雪":"❄️",
-        "暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
-    }
     d_e = wx_emoji_day.get(w['textDay'], "🌡")
     n_e = wx_emoji_night.get(w['textNight'], "🌙")
-
-    L.append(f"{d_e} 白天：{w['textDay']}   {n_e} 夜间：{w['textNight']}")
-    L.append(f"🌡 温  度：{w['tempMin']}°C ～ {w['tempMax']}°C")
-    L.append(f"💧 湿  度：{w['humidity']}%")
-    L.append(f"🌅 日  出：{w['sunrise']}")
-    L.append(f"🌇 日  落：{w['sunset']}")
-    L.append(f"💨 风  力：{w['windDirDay']}  {w['windScaleDay']}")
-    L.append(f"🌧 降水量：{w['precip']} mm")
+    L.append(fill(f"{d_e} 白天：", w['textDay'], space=""))
+    L.append(fill(f"{n_e} 夜间：", w['textNight'], space=""))
+    L.append(fill("🌡 温度：", f"{w['tempMin']}°C ～ {w['tempMax']}°C"))
+    L.append(fill("💧 湿度：", f"{w['humidity']}%"))
+    L.append(fill("🌅 日出：", w['sunrise']))
+    L.append(fill("🌇 日落：", w['sunset']))
+    L.append(fill("💨 风力：", f"{w['windDirDay']}  {w['windScaleDay']}"))
+    L.append(fill("🌧 降水量：", f"{w['precip']} mm"))
     uv = w['uvIndex']
     try:
         uv_num = int(uv)
-    except:
+    except Exception:
         uv_num = 0
-    uv_label = "弱" if uv_num<=2 else "中等" if uv_num<=5 else "强" if uv_num<=7 else "极强"
-    L.append(f"☀️ 紫外线：{uv}（{uv_label}）")
-    L.append(f"🔵 气  压：{w['pressure']} hPa")
-    L.append(f"👁 能 见度：{w['vis']} km")
-    L.append("")
+    uv_label = "弱" if uv_num <= 2 else "中等" if uv_num <= 5 else "强" if uv_num <= 7 else "极强"
+    L.append(fill("☀️ 紫外线：", f"{uv}（{uv_label}）"))
+    L.append(fill("🔵 气压：", f"{w['pressure']} hPa"))
+    L.append(fill("👁 能见度：", f"{w['vis']} km"))
+    L.append(sep())
 
     # ── 空气 ──
     if air:
-        L.append("─" * 28)
-        L.append("")
-        L.append(f"🌬️ 空气质量：{air['label']}")
+        L.append(mid())
+        L.append(fill("🌬️ 空气质量：", air['label']))
         primary = air['primary']
-        if primary and primary not in ("NA","N/A","无","?"):
-            L.append(f"  首要污染物：{primary}")
-        L.append(f"  • PM₂₅ ：{air['pm2p5']}")
-        L.append(f"  • PM₁₀ ：{air['pm10']}")
-        L.append(f"  • SO₂  ：{air['so2']}")
-        L.append(f"  • NO₂  ：{air['no2']}")
-        L.append(f"  • O₃   ：{air['o3']}")
-        L.append(f"  • CO   ：{air['co']}")
-        L.append("")
+        if primary and primary not in ("NA", "N/A", "无", "?"):
+            L.append(line(f"  ⚠️ 首要污染物：{primary}"))
+        pollutants = [
+            ("PM₂.₅", air['pm2p5']),
+            ("PM₁₀", air['pm10']),
+            ("SO₂", air['so2']),
+            ("NO₂", air['no2']),
+            ("O₃", air['o3']),
+            ("CO", air['co']),
+        ]
+        for name, val in pollutants:
+            L.append(fill(f"  • {name}：", val))
+        L.append(sep())
 
     # ── 一言 ──
-    L.append("─" * 28)
-    L.append("")
-    L.append(f"📖 今日一言")
-    L.append(hitokoto)
-    L.append("")
-    L.append(f"_自动推送 · GitHub Actions · {DATE_STR}_")
+    L.append(mid())
+    L.append(line("📖 今 日 一 言"))
+    L.append(sep())
+    quote = hitokoto if hitokoto else "暂无"
+    wrapped = []
+    for i in range(0, len(quote), W - 2):
+        wrapped.append(quote[i:i + W - 2])
+    for row in wrapped:
+        L.append(line(f"「{row}」"))
+    L.append(sep())
+    L.append(bot())
 
     message = "\n".join(L)
     print("\n═══ 最终消息 ═══")
