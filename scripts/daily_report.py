@@ -34,6 +34,15 @@ FS_WEBHOOK = os.environ.get("FS_WEBHOOK") or ""
 # PushDeer（可选，自部署推送服务）
 PUSHDEER_KEY = os.environ.get("PUSHDEER_KEY") or ""
 
+# 微信公众号（自有公众号 API，可选；需服务号 + 微信认证）
+WECHAT_OA_APPID         = os.environ.get("WECHAT_OA_APPID") or ""
+WECHAT_OA_APPSECRET     = os.environ.get("WECHAT_OA_APPSECRET") or ""
+WECHAT_OA_MODE          = os.environ.get("WECHAT_OA_MODE") or "template"   # template=模板消息 / mass=群发图文
+WECHAT_OA_TEMPLATE_ID   = os.environ.get("WECHAT_OA_TEMPLATE_ID") or ""    # 模板消息 ID（后台申请）
+WECHAT_OA_OPENID        = os.environ.get("WECHAT_OA_OPENID") or ""         # 模板消息接收者 openid，多个用逗号分隔
+WECHAT_OA_THUMB_MEDIA_ID= os.environ.get("WECHAT_OA_THUMB_MEDIA_ID") or "" # 群发图文封面图 media_id（需先上传图片素材）
+WECHAT_OA_ARTICLE_AUTHOR= os.environ.get("WECHAT_OA_ARTICLE_AUTHOR") or "每日速报"
+
 # 邮件推送（可选）
 SMTP_USER = os.environ.get("SMTP_USER") or ""
 SMTP_PASS = os.environ.get("SMTP_PASS") or ""
@@ -807,7 +816,149 @@ def send_email(html: str):
         print(f"  邮件: 发送失败 - {e}")
 
 
-def push_all(text: str, tg_html: str, email_html: str, md: str):
+# ── 微信公众号（自有公众号 API）──
+_oa_token_cache = {"access_token": None, "expire": 0}
+
+def get_oa_token():
+    """获取公众号 access_token（带缓存，提前 5 分钟过期）"""
+    now = time.time()
+    if _oa_token_cache["access_token"] and now < _oa_token_cache["expire"]:
+        return _oa_token_cache["access_token"]
+    url = (f"https://api.weixin.qq.com/cgi-bin/token"
+           f"?grant_type=client_credential&appid={WECHAT_OA_APPID}&secret={WECHAT_OA_APPSECRET}")
+    data = fetch_json(url)
+    if "access_token" not in data:
+        raise RuntimeError(f"获取公众号 access_token 失败: {data}")
+    _oa_token_cache["access_token"] = data["access_token"]
+    _oa_token_cache["expire"] = now + data.get("expires_in", 7200) - 300
+    return _oa_token_cache["access_token"]
+
+
+def build_oa_template_data(d):
+    """把日报数据映射成模板消息字段。
+    ⚠️ 字段名（date/city/weather/air/word/remark）必须与你在公众号后台
+       申请的模板完全一致，否则微信会报 “template field mismatch”。
+       请按自己模板的 {{xxx.DATA}} 调整下面的 key。"""
+    w, air = d.get("w", {}), d.get("air") or {}
+    return {
+        "date":    {"value": f"{d.get('date','')} {d.get('weekday','')}", "color": "#173177"},
+        "city":    {"value": d.get("city_name", ""), "color": "#173177"},
+        "weather": {"value": f"{w.get('textDay','')} {w.get('tempMin','')}~{w.get('tempMax','')}°C", "color": "#FF8C00"},
+        "air":     {"value": (air.get("label", "未知") if air else "未知"), "color": "#009966"},
+        "word":    {"value": (d.get("hitokoto") or "今日也要元气满满~")[:50], "color": "#666666"},
+        "remark":  {"value": (f"农历：{d.get('lunar_str','')}" if d.get("lunar_str") else "每日速报")[:50], "color": "#999999"},
+    }
+
+
+def build_oa_article_html(d):
+    """群发图文用的正文 HTML（内联样式，兼容微信图文标签白名单）。"""
+    w, nv = d.get("w", {}), d.get("air") or {}
+    ctx = {
+        "wp": w.get("textDay", ""),
+        "temp": f"{w.get('tempMin','')}~{w.get('tempMax','')}°C",
+        "air_label": (nv.get("label", "未知") if nv else "未知"),
+        "city": d.get("city_name", ""),
+        "quote": (d.get("hitokoto") or "今日也要元气满满~"),
+        "head": f"{d.get('date','')} {d.get('weekday','')}",
+        "lunar": (f" · 农历：{d.get('lunar_str','')}" if d.get("lunar_str") else ""),
+        "holiday": (f" · {d.get('holiday','')}" if d.get("holiday") else ""),
+    }
+    TPL = """<div style="font-family:-apple-system,'PingFang SC',sans-serif;max-width:680px;margin:0 auto;color:#1f2937;">
+  <div style="background:linear-gradient(135deg,#667eea,#764ba2);color:#fff;padding:22px 20px;border-radius:14px 14px 0 0;">
+    <div style="font-size:20px;font-weight:700;">📅 每日速报</div>
+    <div style="opacity:.9;margin-top:6px;font-size:14px;">%(head)s%(holiday)s%(lunar)s</div>
+  </div>
+  <div style="padding:18px 20px;background:#fff;border-radius:0 0 14px 14px;">
+    <div style="display:flex;gap:12px;margin-bottom:14px;">
+      <div style="flex:1;background:#f6f8ff;border-radius:12px;padding:14px;text-align:center;">
+        <div style="font-size:30px;">☀️</div>
+        <div style="margin-top:6px;font-weight:600;">%(wp)s</div>
+        <div style="color:#6b7280;font-size:13px;margin-top:2px;">%(temp)s</div>
+      </div>
+      <div style="flex:1;background:#f0fdf4;border-radius:12px;padding:14px;text-align:center;">
+        <div style="font-size:30px;">🌬️</div>
+        <div style="margin-top:6px;font-weight:600;">空气 %(air_label)s</div>
+        <div style="color:#6b7280;font-size:13px;margin-top:2px;">%(city)s</div>
+      </div>
+    </div>
+    <div style="border-left:4px solid #764ba2;background:#faf5ff;padding:12px 14px;border-radius:8px;font-style:italic;color:#4b5563;">
+      “%(quote)s”
+    </div>
+  </div>
+</div>"""
+    return TPL % ctx
+
+
+def d_get_digest(html):
+    """从 HTML 里提取纯文本摘要。"""
+    txt = re.sub(r"<[^>]+>", "", html)
+    return re.sub(r"\s+", " ", txt).strip()[:120]
+
+
+def send_wechat_oa(d, html):
+    """公众号推送：按 WECHAT_OA_MODE 选择 模板消息 / 群发图文。"""
+    if not (WECHAT_OA_APPID and WECHAT_OA_APPSECRET):
+        return
+    try:
+        if WECHAT_OA_MODE == "mass":
+            _oa_mass(html)
+        else:
+            _oa_template(d)
+        print("  ✅ 微信公众号 成功")
+    except Exception as e:
+        print(f"  ❌ 微信公众号 失败: {e}")
+
+
+def _oa_template(d):
+    token = get_oa_token()
+    if not WECHAT_OA_TEMPLATE_ID:
+        raise RuntimeError("未设置 WECHAT_OA_TEMPLATE_ID（模板消息 ID）")
+    openids = [o.strip() for o in WECHAT_OA_OPENID.split(",") if o.strip()]
+    if not openids:
+        raise RuntimeError("未设置 WECHAT_OA_OPENID（模板消息接收者）")
+    tpl = build_oa_template_data(d)
+    url = f"https://api.weixin.qq.com/cgi-bin/message/template/send?access_token={token}"
+    for oid in openids:
+        payload = {"touser": oid, "template_id": WECHAT_OA_TEMPLATE_ID, "data": tpl}
+        req = request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode(),
+                              headers={"Content-Type": "application/json"})
+        with request.urlopen(req, timeout=10) as resp:
+            print(f"    公众号模板消息→{oid[:6]}…: {resp.read().decode()}")
+
+
+def _oa_mass(html):
+    token = get_oa_token()
+    if not WECHAT_OA_THUMB_MEDIA_ID:
+        raise RuntimeError("群发图文需要 WECHAT_OA_THUMB_MEDIA_ID（封面图素材ID），请先上传图片素材")
+    title = f"每日速报 · {DATE_STR}"
+    media_url = f"https://api.weixin.qq.com/cgi-bin/material/add_news?access_token={token}"
+    article = {
+        "articles": [{
+            "title": title,
+            "author": WECHAT_OA_ARTICLE_AUTHOR,
+            "digest": (d_get_digest(html) or title)[:120],
+            "content": html,
+            "thumb_media_id": WECHAT_OA_THUMB_MEDIA_ID,
+            "need_open_comment": 0,
+            "only_fans_can_comment": 0,
+        }]
+    }
+    req = request.Request(media_url, data=json.dumps(article, ensure_ascii=False).encode(),
+                          headers={"Content-Type": "application/json"})
+    with request.urlopen(req, timeout=15) as resp:
+        mres = json.loads(resp.read().decode())
+    if "media_id" not in mres:
+        raise RuntimeError(f"上传图文素材失败: {mres}")
+    media_id = mres["media_id"]
+    mass_url = f"https://api.weixin.qq.com/cgi-bin/message/mass/sendall?access_token={token}"
+    payload = {"filter": {"is_to_all": True}, "msgtype": "mpnews", "mpnews": {"media_id": media_id}}
+    req = request.Request(mass_url, data=json.dumps(payload, ensure_ascii=False).encode(),
+                          headers={"Content-Type": "application/json"})
+    with request.urlopen(req, timeout=15) as resp:
+        print(f"    公众号群发: {resp.read().decode()}")
+
+
+def push_all(text: str, tg_html: str, email_html: str, md: str, data: dict = None):
     """分发到所有已配置的通道（不同通道使用最适合的渲染格式）"""
     channels = []
     if TG_BOT_TOKEN and TG_CHAT_ID:
@@ -826,6 +977,8 @@ def push_all(text: str, tg_html: str, email_html: str, md: str):
         channels.append("PushDeer")
     if SMTP_USER and SMTP_PASS and SMTP_TO:
         channels.append("邮件")
+    if WECHAT_OA_APPID and WECHAT_OA_APPSECRET:
+        channels.append("微信公众号")
 
     if not channels:
         print("  ⚠️ 未配置任何推送通道")
@@ -888,6 +1041,12 @@ def push_all(text: str, tg_html: str, email_html: str, md: str):
         except Exception as e:
             print(f"  ❌ 邮件 失败: {e}")
 
+    if WECHAT_OA_APPID and WECHAT_OA_APPSECRET:
+        try:
+            send_wechat_oa(data, email_html)
+        except Exception as e:
+            print(f"  ❌ 微信公众号 失败: {e}")
+
 
 def esc(s):
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(s))
@@ -914,7 +1073,8 @@ def main():
         DD_WEBHOOK or
         FS_WEBHOOK or
         PUSHDEER_KEY or
-        (SMTP_USER and SMTP_PASS and SMTP_TO)
+        (SMTP_USER and SMTP_PASS and SMTP_TO) or
+        (WECHAT_OA_APPID and WECHAT_OA_APPSECRET)
     )
     if not has_any_channel:
         errors.append("未配置任何推送通道（Telegram/Bark/微信/钉钉/飞书/邮件）")
@@ -1038,7 +1198,7 @@ def main():
     print(message)
     print("═══ ═══ ═══\n")
 
-    push_all(message, message_tg, message_html, message_md)
+    push_all(message, message_tg, message_html, message_md, data)
     print("✅ 推送完成！")
     print("=" * 40)
     print(f"🏁 每日速报结束 - {datetime.now(CST).strftime('%H:%M:%S')}")
