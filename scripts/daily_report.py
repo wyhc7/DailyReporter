@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""每日速报 —— 和风天气 / 节日 / 农历 / 一言 → Telegram"""
+"""每日速报 —— 和风天气 / 节日 / 农历 / 一言 → 多通道推送（精美版）"""
 import os, json, sys, re, traceback, gzip, io
 import smtplib
 from email.mime.text import MIMEText
@@ -364,10 +364,288 @@ def get_hitokoto():
     return "「✨ 新的一天，愿你心怀暖阳。」\n  —— 每日速报"
 
 
+# ── 天气 emoji 映射（模块级，供各渲染函数复用）────────
+WX_EMOJI_DAY = {
+    "晴":"☀️","少云":"🌤","晴间多云":"🌤","多云":"⛅","阴":"☁️",
+    "霾":"🌫","扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫",
+    "雨":"🌧","小雨":"🌦","中雨":"🌧","大雨":"🌧","暴雨":"🌧",
+    "雷阵雨":"⛈","雪":"❄️","小雪":"🌨","中雪":"❄️","大雪":"❄️",
+    "暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
+}
+WX_EMOJI_NIGHT = {
+    "晴":"🌙","少云":"🌤","晴间多云":"🌤","多云":"☁️","阴":"☁️",
+    "霾":"🌫","扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫",
+    "雨":"🌧","小雨":"🌦","中雨":"🌧","大雨":"🌧","暴雨":"🌧",
+    "雷阵雨":"⛈","雪":"❄️","小雪":"🌨","中雪":"❄️","大雪":"❄️",
+    "暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
+}
+
+
+# ════════════════════════════════════════════════════
+#  精美渲染层：把数据 dict 渲染成不同通道的消息
+#  data = {
+#    "date","weekday","lunar_str","holiday","city_name",
+#    "w":{...}, "air":{...}|None, "hitokoto":str
+#  }
+# ════════════════════════════════════════════════════
+def esc_html(s):
+    return (str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;"))
+
+
+def uv_level(uv):
+    try:
+        n = int(uv)
+    except Exception:
+        n = 0
+    return "弱" if n <= 2 else "中等" if n <= 5 else "强" if n <= 7 else "极强"
+
+
+def aqi_color(aqi):
+    try:
+        aqi = int(aqi)
+    except Exception:
+        aqi = 0
+    if aqi <= 50:
+        return "#22c55e"
+    if aqi <= 100:
+        return "#eab308"
+    if aqi <= 150:
+        return "#f97316"
+    if aqi <= 200:
+        return "#ef4444"
+    if aqi <= 300:
+        return "#a855f7"
+    return "#7f1d1d"
+
+
+def _weather_rows(w):
+    uv = w.get("uvIndex", "?")
+    d_e = WX_EMOJI_DAY.get(w.get("textDay", ""), "🌡")
+    n_e = WX_EMOJI_NIGHT.get(w.get("textNight", ""), "🌙")
+    return [
+        (d_e, "白天", w.get("textDay", "?")),
+        (n_e, "夜间", w.get("textNight", "?")),
+        ("🌡", "温度", f"{w.get('tempMin','?')}°C ~ {w.get('tempMax','?')}°C"),
+        ("💧", "湿度", f"{w.get('humidity','?')}%"),
+        ("🌅", "日出", w.get("sunrise", "?")),
+        ("🌇", "日落", w.get("sunset", "?")),
+        ("💨", "风力", f"{w.get('windDirDay','?')} {w.get('windScaleDay','?')}"),
+        ("🌧", "降水量", f"{w.get('precip','?')} mm"),
+        ("☀️", "紫外线", f"{uv}（{uv_level(uv)}）"),
+        ("🔵", "气压", f"{w.get('pressure','?')} hPa"),
+        ("👁", "能见度", f"{w.get('vis','?')} km"),
+    ]
+
+
+def _pollutants(air):
+    return [
+        ("PM₂.₅", air["pm2p5"]),
+        ("PM₁₀", air["pm10"]),
+        ("SO₂", air["so2"]),
+        ("NO₂", air["no2"]),
+        ("O₃", air["o3"]),
+        ("CO", air["co"]),
+    ]
+
+
+# ── HTML 邮件模板（自包含，可被邮件客户端 / 浏览器渲染）──
+EMAIL_TEMPLATE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>每日速报</title>
+<style>
+  body{margin:0;padding:0;background:#eef2f7;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;}
+  .wrap{max-width:600px;margin:0 auto;padding:24px 14px;}
+  .card{background:#fff;border-radius:18px;overflow:hidden;box-shadow:0 12px 34px rgba(80,90,140,.14);}
+  .header{background:linear-gradient(135deg,#6366f1 0%,#8b5cf6 48%,#ec4899 100%);color:#fff;padding:30px 28px 26px;}
+  .header .date{font-size:27px;font-weight:800;letter-spacing:1px;}
+  .header .sub{margin-top:9px;opacity:.96;font-size:15px;line-height:1.6;}
+  .header .city{margin-top:16px;display:inline-block;background:rgba(255,255,255,.22);padding:7px 16px;border-radius:999px;font-size:15px;font-weight:600;}
+  .section{padding:24px 28px;}
+  .section h2{font-size:16px;margin:0 0 16px;color:#334155;display:flex;align-items:center;gap:8px;font-weight:700;}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
+  .item{background:#f8fafc;border:1px solid #eef2f7;border-radius:12px;padding:13px 15px;}
+  .item .k{font-size:13px;color:#94a3b8;}
+  .item .v{font-size:15px;color:#1e293b;font-weight:600;margin-top:4px;}
+  .air{background:linear-gradient(135deg,#f0f9ff,#eef2ff);border-radius:14px;padding:18px;display:flex;align-items:center;gap:18px;}
+  .aqi-num{width:66px;height:66px;border-radius:16px;color:#fff;font-size:27px;font-weight:800;display:flex;align-items:center;justify-content:center;flex:none;}
+  .air-meta .lvl{font-size:18px;font-weight:700;color:#1e293b;}
+  .air-meta .pri{font-size:13px;color:#64748b;margin-top:5px;}
+  .chips{margin-top:14px;display:flex;flex-wrap:wrap;gap:8px;}
+  .chip{background:#fff;border:1px solid #e2e8f0;border-radius:10px;padding:7px 11px;font-size:13px;color:#475569;}
+  .chip b{color:#334155;}
+  .quote{margin:0 28px 26px;background:linear-gradient(135deg,#fff7ed,#fef2f2);border-left:4px solid #fb7185;border-radius:0 12px 12px 0;padding:20px 22px;font-style:italic;color:#7c2d12;font-size:16px;line-height:1.8;}
+  .footer{text-align:center;color:#94a3b8;font-size:12px;padding:20px;}
+  @media (max-width:480px){.grid{grid-template-columns:1fr;}.wrap{padding:14px 8px;}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="header">
+        <div class="date">{{DATE}} {{WEEKDAY}}</div>
+        <div class="sub">{{HEADER_SUB}}</div>
+        <div class="city">📍 {{CITY}}</div>
+      </div>
+      <div class="section">
+        <h2>☀️ 今日天气</h2>
+        <div class="grid">{{WEATHER_ROWS}}</div>
+      </div>
+      <div class="section" style="padding-top:0">
+        <h2>🌬️ 空气质量</h2>
+        {{AIR_BLOCK}}
+      </div>
+      <div class="quote">{{QUOTE}}</div>
+      <div class="footer">每日速报 · 由 GitHub Actions 自动推送</div>
+    </div>
+  </div>
+</body>
+</html>"""
+
+
+def build_html_email(d):
+    """生成精美的 HTML 邮件（自包含，可在浏览器打开预览）。"""
+    w = d["w"]
+    air = d.get("air")
+    lunar = d.get("lunar_str")
+    holiday = d.get("holiday")
+    city = esc_html(d["city_name"])
+    date = esc_html(d["date"])
+    weekday = esc_html(d["weekday"])
+    quote = esc_html(d.get("hitokoto") or "暂无").replace("\n", "<br>")
+
+    sub = []
+    if lunar:
+        sub.append("📜 农历：" + esc_html(lunar))
+    if holiday:
+        sub.append("🎉 " + esc_html(holiday))
+    header_sub = "　".join(sub) if sub else "&nbsp;"
+
+    weather_rows = "".join(
+        f'<div class="item"><div class="k">{esc_html(k)} {esc_html(label)}</div>'
+        f'<div class="v">{esc_html(value)}</div></div>'
+        for k, label, value in _weather_rows(w)
+    )
+
+    if air:
+        color = aqi_color(air["aqi"])
+        pri = air.get("primary", "")
+        pri_html = (
+            f'<div class="pri">首要污染物：{esc_html(pri)}</div>'
+            if pri not in ("NA", "N/A", "无", "?", "")
+            else ""
+        )
+        chips = "".join(
+            f'<div class="chip">{esc_html(n)} <b>{esc_html(v)}</b></div>'
+            for n, v in _pollutants(air)
+        )
+        air_block = f'''<div class="air">
+          <div class="aqi-num" style="background:{color}">{esc_html(air["aqi"])}</div>
+          <div class="air-meta">
+            <div class="lvl">{esc_html(air.get("category","") or air.get("level",""))}</div>
+            {pri_html}
+          </div>
+        </div>
+        <div class="chips">{chips}</div>'''
+    else:
+        air_block = '<div class="air"><div class="air-meta"><div class="lvl">空气质量数据获取失败</div></div></div>'
+
+    html = (
+        EMAIL_TEMPLATE
+        .replace("{{DATE}}", date)
+        .replace("{{WEEKDAY}}", weekday)
+        .replace("{{HEADER_SUB}}", header_sub)
+        .replace("{{CITY}}", city)
+        .replace("{{WEATHER_ROWS}}", weather_rows)
+        .replace("{{AIR_BLOCK}}", air_block)
+        .replace("{{QUOTE}}", quote)
+    )
+    return html
+
+
+def build_telegram_html(d):
+    """Telegram 富文本（HTML parse_mode）：加粗标题 + emoji 分区。"""
+    w = d["w"]
+    air = d.get("air")
+    lunar = d.get("lunar_str")
+    holiday = d.get("holiday")
+    city = d["city_name"]
+    date = d["date"]
+    weekday = d["weekday"]
+    quote = d.get("hitokoto") or "暂无"
+
+    L = [f"<b>📆 {esc_html(date)} {esc_html(weekday)}</b>"]
+    sub = []
+    if lunar:
+        sub.append(f"📜 农历：{esc_html(lunar)}")
+    if holiday:
+        sub.append(f"🎉 {esc_html(holiday)}")
+    if sub:
+        L.append("　".join(sub))
+    L.append(f"📍 <b>{esc_html(city)}</b>")
+    L.append("")
+    L.append("<b>☀️ 今日天气</b>")
+    for k, label, value in _weather_rows(w):
+        L.append(f"{esc_html(k)} {esc_html(label)}：{esc_html(value)}")
+    if air:
+        L.append("")
+        L.append(f"<b>🌬️ 空气质量：{esc_html(air['label'])}</b>")
+        pri = air.get("primary", "")
+        if pri not in ("NA", "N/A", "无", "?"):
+            L.append(f"  首要污染物：{esc_html(pri)}")
+        for n, v in _pollutants(air):
+            L.append(f"  • {n}：{esc_html(v)}")
+    L.append("")
+    L.append("<b>📖 今日一言</b>")
+    L.append(esc_html(quote))
+    return "\n".join(L)
+
+
+def build_markdown(d):
+    """企业微信 / 钉钉 Markdown 卡片：加粗小标题 + 分隔线。"""
+    w = d["w"]
+    air = d.get("air")
+    lunar = d.get("lunar_str")
+    holiday = d.get("holiday")
+    city = d["city_name"]
+    date = d["date"]
+    weekday = d["weekday"]
+    quote = d.get("hitokoto") or "暂无"
+
+    L = [f"# 📆 {date} {weekday}"]
+    sub = []
+    if lunar:
+        sub.append(f"📜 农历：{lunar}")
+    if holiday:
+        sub.append(f"🎉 {holiday}")
+    if sub:
+        L.append("　".join(sub))
+    L.append(f"📍 **{city}**")
+    L.append("---")
+    L.append("## ☀️ 今日天气")
+    for k, label, value in _weather_rows(w):
+        L.append(f"- {k} {label}：**{value}**")
+    if air:
+        L.append("---")
+        L.append("## 🌬️ 空气质量")
+        L.append(f"**{air['label']}**")
+        pri = air.get("primary", "")
+        if pri not in ("NA", "N/A", "无", "?"):
+            L.append(f"- 首要污染物：{pri}")
+        for n, v in _pollutants(air):
+            L.append(f"- {n}：{v}")
+    L.append("---")
+    L.append("## 📖 今日一言")
+    L.append(f"> {quote}")
+    return "\n".join(L)
+
+
 # ── 6. 多通道推送 ─────────────────────────────────
 
 def send_telegram(text: str):
-    """Telegram 推送（纯文本模式）"""
+    """Telegram 推送（HTML 富文本模式）"""
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
         return
     url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendMessage"
@@ -392,7 +670,7 @@ def send_bark(text: str, subtitle: str = "每日速报"):
 
 
 def send_server_chan(text: str, desp: str = ""):
-    """Server 酱微信推送"""
+    """Server 酱微信推送（content 支持 Markdown）"""
     if not SC_KEY:
         return
     if not desp:
@@ -408,7 +686,7 @@ def send_server_chan(text: str, desp: str = ""):
 
 # ── 企业微信机器人 ──
 def send_wx_work(text: str):
-    """企业微信群机器人推送"""
+    """企业微信群机器人推送（Markdown）"""
     if not WX_WORK_WEBHOOK:
         return
     url = WX_WORK_WEBHOOK
@@ -435,7 +713,7 @@ def dd_sign(secret):
 
 
 def send_dingtalk(text: str):
-    """钉钉群机器人推送（加签模式）"""
+    """钉钉群机器人推送（加签模式，Markdown）"""
     if not DD_WEBHOOK:
         return
     url = DD_WEBHOOK
@@ -445,7 +723,7 @@ def send_dingtalk(text: str):
             url += f"&timestamp={timestamp}&sign={sign}"
         else:
             url += f"?timestamp={timestamp}&sign={sign}"
-    
+
     payload = {
         "msgtype": "markdown",
         "markdown": {
@@ -461,7 +739,7 @@ def send_dingtalk(text: str):
 
 # ── 飞书机器人 ──
 def send_feishu(text: str):
-    """飞书群机器人推送"""
+    """飞书群机器人推送（interactive 卡片）"""
     if not FS_WEBHOOK:
         return
     url = FS_WEBHOOK
@@ -488,7 +766,7 @@ def send_feishu(text: str):
 
 # ── PushDeer ──
 def send_pushdeer(text: str):
-    """PushDeer 推送（自部署）"""
+    """PushDeer 推送（自部署，Markdown）"""
     if not PUSHDEER_KEY:
         return
     url = f"https://api2.pushdeer.com/message/push"
@@ -504,16 +782,16 @@ def send_pushdeer(text: str):
 
 
 # ── 邮件推送 ──
-def send_email(text: str):
-    """SMTP 邮件推送"""
+def send_email(html: str):
+    """SMTP 邮件推送（HTML 精美版）"""
     if not SMTP_USER or not SMTP_PASS or not SMTP_TO:
         return
-    
-    msg = MIMEText(text, 'plain', 'utf-8')
+
+    msg = MIMEText(html, 'html', 'utf-8')
     msg['From'] = SMTP_USER
     msg['To'] = SMTP_TO
     msg['Subject'] = f"每日速报 · {DATE_STR}"
-    
+
     try:
         if SMTP_PORT == 465:
             server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=10)
@@ -529,8 +807,8 @@ def send_email(text: str):
         print(f"  邮件: 发送失败 - {e}")
 
 
-def push_all(message: str):
-    """分发到所有已配置的通道"""
+def push_all(text: str, tg_html: str, email_html: str, md: str):
+    """分发到所有已配置的通道（不同通道使用最适合的渲染格式）"""
     channels = []
     if TG_BOT_TOKEN and TG_CHAT_ID:
         channels.append("Telegram")
@@ -548,67 +826,68 @@ def push_all(message: str):
         channels.append("PushDeer")
     if SMTP_USER and SMTP_PASS and SMTP_TO:
         channels.append("邮件")
-    
+
     if not channels:
         print("  ⚠️ 未配置任何推送通道")
         return
-    
+
     print(f"  📤 推送到: {', '.join(channels)}")
-    
+
     if TG_BOT_TOKEN and TG_CHAT_ID:
         try:
-            send_telegram(message)
+            send_telegram(tg_html)
             print("  ✅ Telegram 成功")
         except Exception as e:
             print(f"  ❌ Telegram 失败: {e}")
-    
+
     if BARK_KEY:
         try:
-            send_bark(message)
+            send_bark(text)
             print("  ✅ Bark 成功")
         except Exception as e:
             print(f"  ❌ Bark 失败: {e}")
-    
+
     if SC_KEY:
         try:
-            send_server_chan(message)
+            send_server_chan(md)
             print("  ✅ Server酱 成功")
         except Exception as e:
             print(f"  ❌ Server酱 失败: {e}")
-    
+
     if WX_WORK_WEBHOOK:
         try:
-            send_wx_work(message)
+            send_wx_work(md)
             print("  ✅ 企业微信 成功")
         except Exception as e:
             print(f"  ❌ 企业微信 失败: {e}")
-    
+
     if DD_WEBHOOK:
         try:
-            send_dingtalk(message)
+            send_dingtalk(md)
             print("  ✅ 钉钉 成功")
         except Exception as e:
             print(f"  ❌ 钉钉 失败: {e}")
-    
+
     if FS_WEBHOOK:
         try:
-            send_feishu(message)
+            send_feishu(text)
             print("  ✅ 飞书 成功")
         except Exception as e:
             print(f"  ❌ 飞书 失败: {e}")
-    
+
     if PUSHDEER_KEY:
         try:
-            send_pushdeer(message)
+            send_pushdeer(md)
             print("  ✅ PushDeer 成功")
         except Exception as e:
             print(f"  ❌ PushDeer 失败: {e}")
-    
+
     if SMTP_USER and SMTP_PASS and SMTP_TO:
         try:
-            send_email(message)
+            send_email(email_html)
         except Exception as e:
             print(f"  ❌ 邮件 失败: {e}")
+
 
 def esc(s):
     return re.sub(r'([_*\[\]()~`>#+\-=|{}.!])', r'\\\1', str(s))
@@ -639,7 +918,7 @@ def main():
     )
     if not has_any_channel:
         errors.append("未配置任何推送通道（Telegram/Bark/微信/钉钉/飞书/邮件）")
-    
+
     if errors:
         err_msg = "配置错误：" + "；".join(errors)
         print(f"❌ {err_msg}")
@@ -663,7 +942,19 @@ def main():
     holiday, lunar_str = get_calendar_info()
     hitokoto = get_hitokoto()
 
-    # ── 消息拼装（简洁卡片排版） ──
+    # ── 数据汇总 ──
+    data = {
+        "date": DATE_STR,
+        "weekday": WEEKDAY,
+        "lunar_str": lunar_str,
+        "holiday": holiday,
+        "city_name": city_name,
+        "w": w,
+        "air": air,
+        "hitokoto": hitokoto,
+    }
+
+    # ── 纯文本（Bark / 飞书 兜底）──
     W = 32
 
     def line(s=""):
@@ -699,22 +990,8 @@ def main():
     L.append("")
 
     # ── 天气 ──
-    wx_emoji_day = {
-        "晴":"☀️","少云":"🌤","晴间多云":"🌤","多云":"⛅","阴":"☁️",
-        "霾":"🌫","扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫",
-        "雨":"🌧","小雨":"🌦","中雨":"🌧","大雨":"🌧","暴雨":"🌧",
-        "雷阵雨":"⛈","雪":"❄️","小雪":"🌨","中雪":"❄️","大雪":"❄️",
-        "暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
-    }
-    wx_emoji_night = {
-        "晴":"🌙","少云":"🌤","晴间多云":"🌤","多云":"☁️","阴":"☁️",
-        "霾":"🌫","扬沙":"💨","浮尘":"🌫","沙尘暴":"💨","雾":"🌫",
-        "雨":"🌧","小雨":"🌦","中雨":"🌧","大雨":"🌧","暴雨":"🌧",
-        "雷阵雨":"⛈","雪":"❄️","小雪":"🌨","中雪":"❄️","大雪":"❄️",
-        "暴雪":"❄️","雨夹雪":"🌨","冻雨":"🌨",
-    }
-    d_e = wx_emoji_day.get(w['textDay'], "🌡")
-    n_e = wx_emoji_night.get(w['textNight'], "🌙")
+    d_e = WX_EMOJI_DAY.get(w['textDay'], "🌡")
+    n_e = WX_EMOJI_NIGHT.get(w['textNight'], "🌙")
 
     L.append(kv(f"{d_e} 白天", w['textDay']))
     L.append(kv(f"{n_e} 夜间", w['textNight']))
@@ -725,11 +1002,7 @@ def main():
     L.append(kv("💨 风力", f"{w['windDirDay']}  {w['windScaleDay']}"))
     L.append(kv("🌧 降水量", f"{w['precip']} mm"))
     uv = w['uvIndex']
-    try:
-        uv_num = int(uv)
-    except Exception:
-        uv_num = 0
-    uv_label = "弱" if uv_num <= 2 else "中等" if uv_num <= 5 else "强" if uv_num <= 7 else "极强"
+    uv_label = uv_level(uv)
     L.append(kv("☀️ 紫外线", f"{uv}（{uv_label}）"))
     L.append(kv("🔵 气压", f"{w['pressure']} hPa"))
     L.append(kv("👁 能见度", f"{w['vis']} km"))
@@ -740,15 +1013,7 @@ def main():
         primary = air['primary']
         if primary and primary not in ("NA", "N/A", "无", "?"):
             L.append(kv("⚠️ 首要污染物", primary, label_width=14))
-        pollutants = [
-            ("PM₂.₅", air['pm2p5']),
-            ("PM₁₀", air['pm10']),
-            ("SO₂", air['so2']),
-            ("NO₂", air['no2']),
-            ("O₃", air['o3']),
-            ("CO", air['co']),
-        ]
-        for name, val in pollutants:
+        for name, val in _pollutants(air):
             L.append(kv(f"    • {name}", val, label_width=14))
 
     # ── 一言 ──
@@ -763,11 +1028,17 @@ def main():
     L.append("")
 
     message = "\n".join(L)
-    print("\n═══ 最终消息 ═══")
+
+    # ── 多格式渲染 ──
+    message_tg = build_telegram_html(data)
+    message_html = build_html_email(data)
+    message_md = build_markdown(data)
+
+    print("\n═══ 最终消息（文本版）═══")
     print(message)
     print("═══ ═══ ═══\n")
 
-    push_all(message)
+    push_all(message, message_tg, message_html, message_md)
     print("✅ 推送完成！")
     print("=" * 40)
     print(f"🏁 每日速报结束 - {datetime.now(CST).strftime('%H:%M:%S')}")
